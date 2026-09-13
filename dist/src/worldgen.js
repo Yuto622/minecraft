@@ -151,6 +151,20 @@ export function* generate() {
   vein(ID.GRANITE, 160, 44, 8);
   vein(ID.GRAVEL, 140, 44, 7);
 
+  // 3.5) 地下の溶岩だまり
+  yield { p: .63, msg: '地の底に溶岩を溜めています' };
+  // 一帯にだけ溶岩だまりを作る（地下がすべて溶岩にならないように）
+  for (let x = 2; x < W - 2; x++) for (let z = 2; z < W - 2; z++) {
+    const pool = noise2(x / 26, z / 26, 121);
+    if (pool < .62) continue;
+    const top = pool > .78 ? 9 : 6;
+    for (let y = 2; y < top; y++) {
+      if (getBlock(x, y, z)) continue;
+      if (!getBlock(x, y - 1, z)) continue;      // 底が抜けている所には溜まらない
+      setRaw(x, y, z, ID.LAVA);
+    }
+  }
+
   // 4) 木と草花
   yield { p: .66, msg: '森を育てています' };
   const setIfAir = (x, y, z, id) => { if (!getBlock(x, y, z)) setRaw(x, y, z, id); };

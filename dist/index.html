@@ -44,6 +44,7 @@
   <div id="vitals" class="hidden">
     <div class="icons hearts" id="hearts" title="体力"></div>
     <div class="icons food" id="food" title="満腹度"></div>
+    <div class="icons armor hidden" id="armor" title="防御"></div>
     <div class="icons air hidden" id="air" title="息"></div>
   </div>
   <div id="selectedName"></div>
@@ -74,6 +75,20 @@
     <button id="touchBag" class="wide">🎒<span>持ち物とクラフト</span></button>
   </div>
 </div>
+
+<section id="death" class="overlay hidden">
+  <div class="deathbox">
+    <h1 id="deathTitle">たおれてしまった</h1>
+    <p id="deathCause"></p>
+    <div class="deathstats" id="deathStats"></div>
+    <button id="respawn" class="primary">その場所からやり直す <span>↗</span></button>
+    <button id="deathMenu" class="ghost">メニューへ戻る</button>
+  </div>
+</section>
+
+<div id="chatbar" class="hidden"><span>/</span><input id="chatInput" type="text" autocomplete="off" spellcheck="false" placeholder="コマンド（help で一覧）"></div>
+<div id="chatLog"></div>
+<div id="toastAdv"><div class="advbox"><span class="eyebrow">進捗</span><strong id="advName"></strong><small id="advDesc"></small></div></div>
 
 <section id="loading" class="overlay">
   <div class="loadbox">

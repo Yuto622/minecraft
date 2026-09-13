@@ -125,6 +125,32 @@ export const recipes = [
   { pattern: ['##', '##'], key: { '#': ID.SAND }, out: [ID.SANDSTONE, 1] },
   { pattern: ['##', '##'], key: { '#': ID.STONE }, out: [ID.STONE_BRICK, 4] },
 
+  // 農業
+  { pattern: ['##', ' |', ' |'], key: { '#': ANY_PLANK, '|': IT.STICK }, out: [IT.WOOD_HOE, 1] },
+  { pattern: ['##', ' |', ' |'], key: { '#': ID.COBBLE, '|': IT.STICK }, out: [IT.STONE_HOE, 1] },
+  { pattern: ['##', ' |', ' |'], key: { '#': IT.IRON, '|': IT.STICK }, out: [IT.IRON_HOE, 1] },
+  { pattern: ['###'], key: { '#': IT.WHEAT_ITEM }, out: [IT.BREAD, 1] },
+  { pattern: ['###', '###', '###'], key: { '#': IT.WHEAT_ITEM }, out: [ID.HAY, 1] },
+
+  // 弓と矢・バケツ
+  { pattern: [' |=', '| =', ' |='], key: { '|': IT.STICK, '=': ANY_WOOL }, out: [IT.BOW, 1] },
+  { pattern: ['^', '|', 'f'], key: { '^': IT.FLINT, '|': IT.STICK, f: IT.FLINT }, out: [IT.ARROW, 4] },
+  { pattern: ['# #', ' # '], key: { '#': IT.IRON }, out: [IT.BUCKET, 1] },
+
+  // 防具
+  { pattern: ['###', '# #'], key: { '#': IT.LEATHER }, out: [IT.HELM_L, 1] },
+  { pattern: ['# #', '###', '###'], key: { '#': IT.LEATHER }, out: [IT.CHEST_L, 1] },
+  { pattern: ['###', '# #', '# #'], key: { '#': IT.LEATHER }, out: [IT.LEGS_L, 1] },
+  { pattern: ['# #', '# #'], key: { '#': IT.LEATHER }, out: [IT.BOOTS_L, 1] },
+  { pattern: ['###', '# #'], key: { '#': IT.IRON }, out: [IT.HELM_I, 1] },
+  { pattern: ['# #', '###', '###'], key: { '#': IT.IRON }, out: [IT.CHEST_I, 1] },
+  { pattern: ['###', '# #', '# #'], key: { '#': IT.IRON }, out: [IT.LEGS_I, 1] },
+  { pattern: ['# #', '# #'], key: { '#': IT.IRON }, out: [IT.BOOTS_I, 1] },
+  { pattern: ['###', '# #'], key: { '#': IT.DIAMOND }, out: [IT.HELM_D, 1] },
+  { pattern: ['# #', '###', '###'], key: { '#': IT.DIAMOND }, out: [IT.CHEST_D, 1] },
+  { pattern: ['###', '# #', '# #'], key: { '#': IT.DIAMOND }, out: [IT.LEGS_D, 1] },
+  { pattern: ['# #', '# #'], key: { '#': IT.DIAMOND }, out: [IT.BOOTS_D, 1] },
+
   // 素材
   { shapeless: [ID.WOOL_W, ID.ROSE], out: [ID.WOOL_R, 1] },
   { shapeless: [ID.WOOL_W, ID.DAISY], out: [ID.WOOL_Y, 1] },
@@ -140,6 +166,9 @@ export const smelting = {
   [ID.SAND]: ID.GLASS, [IT.RAW_IRON]: IT.IRON, [ID.CLAY]: ID.BRICK,
   [ID.COBBLE]: ID.STONE, [IT.MEAT_RAW]: IT.MEAT, [ID.STONE]: ID.STONE_BRICK,
 };
+
+// 防具スロット（頭・胴・脚・足）
+export const ARMOR_SLOTS = 4;
 
 const matches = (cell, want) => {
   if (!cell) return false;

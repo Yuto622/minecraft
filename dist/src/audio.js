@@ -93,4 +93,5 @@ export function rain(level) {
   }
   rainGain.gain.setTargetAtTime(level * .13, ctx.currentTime, 1.5);
 }
+export function bow(power) { tone(300 + power * 260, .22, .1, 'triangle', 2.1); noise(.08, .12, 1800, 'bandpass', 2); }
 export function ui(up = true) { tone(up ? 660 : 440, .07, .05, 'sine'); }

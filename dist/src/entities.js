@@ -28,12 +28,13 @@ function groundAt(x, z, fromY) {
 }
 
 export const MOB = {
-  pig:     { name: 'ブタ', hp: 10, body: '#e8a39a', legs: '#c98a82', speed: 1.1, drop: IT.MEAT },
-  cow:     { name: 'ウシ', hp: 12, body: '#4b3a2d', legs: '#3b2e24', speed: .95, drop: IT.MEAT },
+  pig:     { name: 'ブタ', hp: 10, body: '#e8a39a', legs: '#c98a82', speed: 1.1, drop: IT.MEAT_RAW },
+  cow:     { name: 'ウシ', hp: 12, body: '#4b3a2d', legs: '#3b2e24', speed: .95, drop: IT.MEAT_RAW, drop2: IT.LEATHER },
   sheep:   { name: 'ヒツジ', hp: 10, body: '#eeeadb', legs: '#d8d2c0', speed: 1, drop: ID.WOOL_W },
-  chicken: { name: 'ニワトリ', hp: 6, body: '#f2f0e8', legs: '#e0a83c', speed: 1.3, drop: IT.MEAT },
+  chicken: { name: 'ニワトリ', hp: 6, body: '#f2f0e8', legs: '#e0a83c', speed: 1.3, drop: IT.MEAT_RAW },
   zombie:  { name: 'ゾンビ', hp: 18, body: '#4f7a52', legs: '#3c4f7a', speed: 1.5, hostile: true },
   creeper: { name: 'クリーパー', hp: 14, body: '#5fa356', legs: '#4a8a46', speed: 1.7, hostile: true, fuse: true },
+  skeleton: { name: 'スケルトン', hp: 16, body: '#d9d7cf', legs: '#c6c4bc', speed: 1.25, hostile: true, ranged: true },
 };
 
 function buildMob(type) {
@@ -47,6 +48,14 @@ function buildMob(type) {
     box(.06, .2, .28, '#ffffff', -.2, .6, -.18, g);
     for (const z of [-.11, .11]) parts.legs.push(limb(.08, .32, .08, d.legs, 0, .4, z, g));
     box(.22, .16, .04, '#c8443c', .28, .95, 0, g);
+  } else if (type === 'skeleton') {
+    box(.42, .8, .26, d.body, 0, 1.2, 0, g);
+    parts.head = box(.5, .5, .5, '#e4e2da', 0, 1.85, 0, g);
+    box(.1, .1, .04, '#1c1c1c', .13, 1.9, .25, parts.head);
+    box(.1, .1, .04, '#1c1c1c', -.13, 1.9, .25, parts.head);
+    for (const x of [-.32, .32]) { const a = limb(.14, .7, .14, d.body, x, 1.55, .08, g); a.rotation.x = -1.5; parts.arms.push(a); }
+    for (const x of [-.12, .12]) parts.legs.push(limb(.14, .74, .14, d.legs, x, .76, 0, g));
+    box(.06, .8, .06, '#8a6435', .42, 1.5, .18, g);
   } else if (type === 'creeper') {
     box(.52, .9, .34, d.body, 0, 1.05, 0, g);
     parts.head = box(.5, .5, .5, '#63ab58', 0, 1.72, 0, g);
@@ -89,7 +98,7 @@ export class Mobs {
       type, g, parts, def: MOB[type], hp: MOB[type].hp,
       angle, target: angle, t: Math.random() * 10, vy: 0, walkT: 0,
       idle: Math.random() * 4, walking: false, hurt: 0, atk: 0, flee: 0,
-      voice: 4 + Math.random() * 20,
+      voice: 4 + Math.random() * 20, love: 0, loveCd: 0, baby: false, grow: 0,
     };
     this.scene.add(g); this.list.push(m);
     return m;
@@ -121,7 +130,8 @@ export class Mobs {
       const y = surface(x, z);
       if (y <= SEA) continue;
       if (getBlock(x, y + 1, z) || getBlock(x, y + 2, z)) continue;
-      this.spawn(Math.random() < .35 ? 'creeper' : 'zombie', x + .5, y + 1, z + .5);
+      const pick = Math.random();
+      this.spawn(pick < .3 ? 'creeper' : pick < .58 ? 'skeleton' : 'zombie', x + .5, y + 1, z + .5);
       return;
     }
   }
@@ -132,6 +142,13 @@ export class Mobs {
       const m = this.list[i];
       m.t += dt;
       m.hurt = Math.max(0, m.hurt - dt);
+      m.love = Math.max(0, (m.love || 0) - dt);
+      m.loveCd = Math.max(0, (m.loveCd || 0) - dt);
+      if (m.baby) {
+        m.grow -= dt;
+        if (m.grow <= 0) { m.baby = false; m.g.scale.setScalar(1); }
+        else m.g.scale.setScalar(.55 + (1 - m.grow / 150) * .45);
+      }
       m.atk = Math.max(0, m.atk - dt);
       const hostile = m.def.hostile;
       const pos = m.g.position;
@@ -153,6 +170,11 @@ export class Mobs {
         want = dist > 1.1;
         speed *= 1.15;
         if (dist < 1.8 && Math.abs(player.y - pos.y) < 2.4 && m.atk <= 0) { hitPlayer(4); m.atk = 1.1; }
+      } else if (m.love > 0) {
+        let mate = null;
+        for (const o of this.list) if (o !== m && o.type === m.type && o.love > 0 && !o.baby) { mate = o; break; }
+        if (mate) { m.target = Math.atan2(mate.g.position.z - pos.z, mate.g.position.x - pos.x); want = true; speed *= 1.2; }
+        else { m.idle -= dt; want = m.walking; }
       } else {
         m.idle -= dt;
         if (m.idle <= 0) {                           // ときどき向きを変えて、歩いたり止まったり
@@ -228,6 +250,24 @@ export class Mobs {
     return best;
   }
 
+  // 小麦を食べさせる。近くに同じ種類の相手がいれば子が生まれる。
+  feed(m) {
+    if (m.baby || m.loveCd > 0) return false;
+    m.love = 18;
+    m.loveCd = 24;
+    for (const o of this.list) {
+      if (o === m || o.type !== m.type || !(o.love > 0) || o.baby) continue;
+      if (o.g.position.distanceTo(m.g.position) > 6) continue;
+      o.love = 0; m.love = 0;
+      const baby = this.spawn(m.type, (m.g.position.x + o.g.position.x) / 2, m.g.position.y, (m.g.position.z + o.g.position.z) / 2);
+      baby.baby = true;
+      baby.grow = 150;
+      baby.g.scale.setScalar(.55);
+      return true;
+    }
+    return true;
+  }
+
   damage(m, dmg, from, onDrop) {
     m.hp -= dmg;
     m.hurt = .3;
@@ -241,6 +281,8 @@ export class Mobs {
       if (i >= 0) this.list.splice(i, 1);
       this.scene.remove(m.g);
       if (m.def.drop) onDrop?.(m.def.drop, 1 + Math.floor(Math.random() * 2));
+      if (m.def.drop2 && Math.random() < .6) onDrop?.(m.def.drop2, 1);
+      if (m.type === 'skeleton') { onDrop?.(IT.ARROW, 1 + Math.floor(Math.random() * 2)); }
       return true;
     }
     return false;
@@ -299,5 +341,63 @@ export class Particles {
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+  }
+}
+
+// --- 矢 ---------------------------------------------------------------------
+export class Arrows {
+  constructor(scene) {
+    this.scene = scene;
+    this.list = [];
+    this.geo = new THREE.CylinderGeometry(.028, .028, .8, 5);
+    this.geo.rotateX(Math.PI / 2);
+    this.mat = new THREE.MeshLambertMaterial({ color: '#c9c2b2' });
+    this.tipMat = new THREE.MeshLambertMaterial({ color: '#5a5f63' });
+  }
+  clear() { for (const a of this.list) this.scene.remove(a.mesh); this.list.length = 0; }
+
+  shoot(x, y, z, dx, dy, dz, power, fromPlayer) {
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const speed = 18 + power * 26;
+    const mesh = new THREE.Mesh(this.geo, this.mat);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(.055, .16, 5), this.tipMat);
+    tip.rotation.x = -Math.PI / 2;
+    tip.position.z = .44;
+    mesh.add(tip);
+    mesh.position.set(x, y, z);
+    this.scene.add(mesh);
+    this.list.push({
+      mesh, fromPlayer,
+      vx: dx / len * speed, vy: dy / len * speed, vz: dz / len * speed,
+      life: 12, dmg: fromPlayer ? 3 + power * 6 : 4,
+    });
+  }
+
+  update(dt, ctx) {
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const a = this.list[i];
+      a.life -= dt;
+      const p = a.mesh.position;
+      a.vy -= dt * 17;
+      const nx = p.x + a.vx * dt, ny = p.y + a.vy * dt, nz = p.z + a.vz * dt;
+      let done = a.life <= 0;
+
+      if (isSolid(getBlock(Math.floor(nx), Math.floor(ny), Math.floor(nz)))) {
+        ctx.onHitBlock?.(nx, ny, nz);
+        done = true;
+      } else if (a.fromPlayer) {
+        const m = ctx.pickMob?.(nx, ny, nz);
+        if (m) { ctx.hitMob?.(m, a.dmg); done = true; }
+      } else {
+        const pl = ctx.player;
+        if (Math.abs(pl.x - nx) < .5 && Math.abs(pl.z - nz) < .5 && ny > pl.y && ny < pl.y + 1.85) {
+          ctx.hitPlayer?.(a.dmg);
+          done = true;
+        }
+      }
+      if (done) { this.scene.remove(a.mesh); this.list.splice(i, 1); continue; }
+      p.set(nx, ny, nz);
+      a.mesh.lookAt(nx + a.vx, ny + a.vy, nz + a.vz);
+    }
   }
 }

@@ -3,7 +3,7 @@
 // 「箱の集まり」で表される形も扱う。面ごとの陰影 + アンビエントオクルージョン +
 // 4点平均のスムースライティング。
 import * as THREE from '../three.module.js';
-import { getBlock, getMeta, skyAt, blockAt, isOpaque, isFull, CH, H } from './world.js';
+import { getBlock, getMeta, skyAt, blockAt, isOpaque, isFull, CH, W, voxels } from './world.js';
 import { blocks, ID } from './blocks.js';
 import { faceLayer, layer } from './textures.js';
 
@@ -149,10 +149,20 @@ export function blockBoxes(id, m) {
   return boxes;
 }
 
-export function buildChunk(cx, cz) {
+// 1区画は 16×16×16。縦にも分けることで、地下の面を地上で描かずに済む。
+export function buildChunk(cx, cy, cz) {
+  const x0 = cx * CH, z0 = cz * CH, y0 = cy * CH;
+  // 空っぽの区画はすぐ返す（空の上や岩盤の下はほとんどこれ）
+  let any = false;
+  for (let y = y0; y < y0 + CH && !any; y++)
+    for (let z = z0; z < z0 + CH && !any; z++) {
+      const base = W * (z + W * y);
+      for (let x = x0; x < x0 + CH; x++) if (voxels[base + x]) { any = true; break; }
+    }
+  if (!any) return { solid: null, alpha: null };
+
   const solid = newG(), alpha = newG();
-  const x0 = cx * CH, z0 = cz * CH;
-  for (let x = x0; x < x0 + CH; x++) for (let z = z0; z < z0 + CH; z++) for (let y = 0; y < H; y++) {
+  for (let x = x0; x < x0 + CH; x++) for (let z = z0; z < z0 + CH; z++) for (let y = y0; y < y0 + CH; y++) {
     const id = getBlock(x, y, z);
     if (!id) continue;
     const b = blocks[id];
@@ -161,8 +171,8 @@ export function buildChunk(cx, cz) {
     if (b.plant) { // 草花・たいまつは交差した板
       const sky = skyAt(x, y, z) / 15, blk = blockAt(x, y, z) / 15;
       const L = [[sky, blk, .95], [sky, blk, .95], [sky, blk, .95], [sky, blk, .95]];
-      const lay = faceLayer(id, 2);
-      const mg = .148, hgt = id === ID.TORCH ? .62 : 1;
+      const lay = b.stages ? (layer[b.stages[Math.min(m, b.stages.length - 1)]] ?? 0) : faceLayer(id, 2);
+      const mg = b.crop ? .02 : .148, hgt = id === ID.TORCH ? .62 : 1;
       const uv = [[0, 1], [1, 1], [0, 0], [1, 0]];
       for (const s of [1, -1]) {
         pushQuad(solid, [

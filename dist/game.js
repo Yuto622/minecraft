@@ -3,13 +3,13 @@
 // 生き物・クラフト・昼夜まで、すべてこのリポジトリ内で完結している。
 import * as THREE from './three.module.js';
 import { ID, IT, TOOL, blocks, items, isItem, name as blockName, color as blockColor } from './src/blocks.js';
-import { buildAtlas, iconURL, blockTextures, tileTexture } from './src/textures.js';
+import { buildAtlas, iconURL, blockTextures, tileTexture, cloudTexture, discTexture } from './src/textures.js';
 import * as W3 from './src/world.js';
 import { W, H, SEA, CH, CX, getBlock, setRaw, getMeta, setMeta, relight, relightAll, surface, isSolid, heightMap, biomeMap } from './src/world.js';
 import { generate, setSeed, findSpawn, biomeName, biomeTint } from './src/worldgen.js';
 import { buildChunk, blockBoxes } from './src/mesher.js';
 import { voxelMaterial, makeSky } from './src/shaders.js';
-import { Mobs, Particles } from './src/entities.js';
+import { Mobs, Particles, Arrows } from './src/entities.js';
 import { Inventory, SLOTS, HOTBAR, maxStack, findRecipe, craftOnce, recipes, fuels, smelting } from './src/inventory.js';
 import { Drops } from './src/drops.js';
 import * as Snd from './src/audio.js';
@@ -22,7 +22,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
-const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, hints: true, bob: true, buttons: false };
+const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, hints: true, bob: true, buttons: false, dropOnDeath: true };
 const settings = Object.assign({}, defaults, JSON.parse(localStorage.getItem('blockwild-settings') || '{}'));
 const saveSettings = () => localStorage.setItem('blockwild-settings', JSON.stringify(settings));
 
@@ -50,6 +50,31 @@ scene.add(camera);
 
 const sky = makeSky();
 scene.add(sky);
+
+// 雲の層（本家と同じく、世界の上をゆっくり流れる）
+const cloudTex = cloudTexture(128);
+cloudTex.repeat.set(26, 26);
+const clouds = new THREE.Mesh(
+  new THREE.PlaneGeometry(760, 760),
+  new THREE.MeshLambertMaterial({ map: cloudTex, transparent: true, opacity: .82, depthWrite: false, fog: false, side: THREE.DoubleSide })
+);
+clouds.rotation.x = -Math.PI / 2;
+clouds.position.set(W / 2, H + 30, W / 2);
+clouds.renderOrder = -5;
+scene.add(clouds);
+
+// 太陽と月（本家と同じ四角）
+const makeDisc = kind => {
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(kind === 'sun' ? 46 : 38, kind === 'sun' ? 46 : 38),
+    new THREE.MeshBasicMaterial({ map: discTexture(kind), transparent: true, depthWrite: false, depthTest: false, fog: false })
+  );
+  m.renderOrder = -8;
+  m.frustumCulled = false;
+  scene.add(m);
+  return m;
+};
+const sunDisc = makeDisc('sun'), moonDisc = makeDisc('moon');
 scene.fog = new THREE.Fog('#9fd0e8', 30, 150);
 
 // 生き物・パーティクル用の光（地形は自前シェーダで陰影を焼いている）
@@ -174,9 +199,10 @@ function layoutHeld() {
 // 「今どこを中心に世界を組み立てるか」。遊んでいる間はプレイヤー、
 // メニューの空撮中はカメラの位置を指す。
 const focus = new THREE.Vector3(W / 2, 40, W / 2);
-const chunks = new Map();           // "cx,cz" -> {solid, alpha}
+const SECT = H / CH;                // 縦の区画数
+const chunks = new Map();           // "cx,cy,cz" -> {solid, alpha}
 const pending = new Set();          // 作り直し待ち
-function key(cx, cz) { return cx + ',' + cz; }
+function key(cx, cy, cz) { return cx + ',' + cy + ',' + cz; }
 
 function disposeChunk(k) {
   const c = chunks.get(k);
@@ -185,11 +211,11 @@ function disposeChunk(k) {
   chunks.delete(k);
 }
 
-function buildOne(cx, cz) {
-  const k = key(cx, cz);
-  const { solid, alpha } = buildChunk(cx, cz);
+function buildOne(cx, cy, cz) {
+  const k = key(cx, cy, cz);
+  const { solid, alpha } = buildChunk(cx, cy, cz);
   disposeChunk(k);
-  const entry = { solid: null, alpha: null, cx, cz };
+  const entry = { solid: null, alpha: null, cx, cy, cz };
   if (solid) { const m = new THREE.Mesh(solid, matSolid); m.frustumCulled = true; scene.add(m); entry.solid = m; }
   if (alpha) { const m = new THREE.Mesh(alpha, matAlpha); m.renderOrder = 2; scene.add(m); entry.alpha = m; }
   chunks.set(k, entry);
@@ -198,21 +224,23 @@ function buildOne(cx, cz) {
 function markDirty(x0, y0, z0, x1, y1, z1) {
   const cx0 = Math.max(0, Math.floor((x0 - 1) / CH)), cx1 = Math.min(CX - 1, Math.floor((x1 + 1) / CH));
   const cz0 = Math.max(0, Math.floor((z0 - 1) / CH)), cz1 = Math.min(CX - 1, Math.floor((z1 + 1) / CH));
-  for (let cx = cx0; cx <= cx1; cx++) for (let cz = cz0; cz <= cz1; cz++) pending.add(key(cx, cz));
+  const cy0 = Math.max(0, Math.floor((y0 - 1) / CH)), cy1 = Math.min(SECT - 1, Math.floor((y1 + 1) / CH));
+  for (let cx = cx0; cx <= cx1; cx++) for (let cz = cz0; cz <= cz1; cz++)
+    for (let cy = cy0; cy <= cy1; cy++) pending.add(key(cx, cy, cz));
 }
 
 // 近いところから順に作り直す
 function processChunks(budgetMs) {
   if (!pending.size) return;
   const t0 = performance.now();
-  const px = focus.x / CH, pz = focus.z / CH;
+  const px = focus.x / CH, py = focus.y / CH, pz = focus.z / CH;
   const list = [...pending].sort((a, b) => {
-    const [ax, az] = a.split(',').map(Number), [bx, bz] = b.split(',').map(Number);
-    return ((ax - px) ** 2 + (az - pz) ** 2) - ((bx - px) ** 2 + (bz - pz) ** 2);
+    const [ax, ay, az] = a.split(',').map(Number), [bx, by, bz] = b.split(',').map(Number);
+    return ((ax - px) ** 2 + (ay - py) ** 2 * .5 + (az - pz) ** 2) - ((bx - px) ** 2 + (by - py) ** 2 * .5 + (bz - pz) ** 2);
   });
   for (const k of list) {
-    const [cx, cz] = k.split(',').map(Number);
-    buildOne(cx, cz);
+    const [cx, cy, cz] = k.split(',').map(Number);
+    buildOne(cx, cy, cz);
     pending.delete(k);
     if (performance.now() - t0 > budgetMs) break;
   }
@@ -314,8 +342,20 @@ function unstick() {
 const blockAtFeet = () => getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y + .1), Math.floor(player.pos.z));
 const blockAtEye = () => getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y + EYE), Math.floor(player.pos.z));
 
+function armorPoints() {
+  return armor.reduce((a, st) => a + (st ? (items[st.id]?.def || 0) : 0), 0);
+}
 function damage(n, reason) {
   if (mode !== 'survival' || player.hurtCd > 0 || !playing) return;
+  const ap = armorPoints();
+  if (ap > 0) {                                    // 防具で軽減し、その分すり減る
+    n = Math.max(1, Math.round(n * (1 - Math.min(.8, ap * .04))));
+    armor.forEach((st, i) => {
+      if (!st) return;
+      st.dur = (st.dur ?? items[st.id].dur) - 1;
+      if (st.dur <= 0) { armor[i] = null; toast(items[st.id].name + ' が壊れた'); }
+    });
+  }
   player.health = Math.max(0, player.health - n);
   player.hurtCd = .6;
   document.body.classList.add('hurt');
@@ -324,14 +364,45 @@ function damage(n, reason) {
   updateVitals();
   if (player.health <= 0) die(reason);
 }
+let deathPos = null;
 function die(reason) {
-  toast('たおれてしまった… ' + (reason || '') + ' / 所持品はそのまま');
-  const s = findSpawn();
+  playing = false;
+  mining = false;
+  document.exitPointerLock?.();
+  document.body.classList.remove('playing');
+  deathPos = player.pos.clone();
+  Snd.hurt();
+  if (settings.dropOnDeath) {                       // 本家と同じく持ち物を落とす
+    let dropped = 0;
+    bag.slots.forEach((st, i) => {
+      if (!st) return;
+      drops.spawn(st.id, st.n, player.pos.x, player.pos.y + .8, player.pos.z, .9, st.dur);
+      bag.set(i, null);
+      dropped += st.n;
+    });
+    $('deathCause').textContent = (reason || '力尽きた') + '。持ち物 ' + dropped + ' 個をその場に落とした。';
+  } else {
+    $('deathCause').textContent = (reason || '力尽きた') + '。持ち物はそのまま。';
+  }
+  $('deathStats').innerHTML = `
+    <div><b>${deathPos.x.toFixed(0)} / ${deathPos.y.toFixed(0)} / ${deathPos.z.toFixed(0)}</b>たおれた場所</div>
+    <div><b>${Math.floor(time / DAY_LEN) + 1}</b>日目</div>
+    <div><b>${stats.mined}</b>掘ったブロック</div>`;
+  $('death').classList.remove('hidden');
+  updateHotbar();
+}
+function respawn() {
+  $('death').classList.add('hidden');
+  const s = spawnPoint || findSpawn();
   player.pos.set(s[0], s[1], s[2]);
   player.vel.set(0, 0, 0);
   player.health = 20; player.food = Math.max(6, player.food - 4); player.air = 10;
+  unstick();
   updateVitals();
+  start();
+  if (deathPos) toast('たおれた場所は X ' + deathPos.x.toFixed(0) + ' / Z ' + deathPos.z.toFixed(0));
 }
+let spawnPoint = null;
 
 // ---------------------------------------------------------------------------
 // 視線の先（DDA でボクセルを追う）
@@ -436,6 +507,8 @@ function damageTool(n = 1) {
 // 壊したときに何がいくつ落ちるか
 function dropsOf(id, m) {
   const b = blocks[id];
+  if (id === ID.WHEAT) return m >= 3 ? [[IT.WHEAT_ITEM, 1], [IT.SEEDS, 1 + (Math.random() < .5 ? 1 : 0)]] : [[IT.SEEDS, 1]];
+  if (id === ID.TALL_GRASS) return Math.random() < .35 ? [[IT.SEEDS, 1]] : [];
   if (id === ID.LEAVES || id === ID.BIRCH_LEAVES || id === ID.PINE_LEAVES) {
     return Math.random() < .06 ? [[ID.OAK_SAPLING ?? id, 1]] : (Math.random() < .04 ? [[IT.STICK, 1]] : []);
   }
@@ -479,7 +552,10 @@ function mineBlock(hit) {
   }
   queueFall(x, y + 1, z);
   queueLeafCheck(x, y, z, id);
+  queueNeighborFluids(x, y, z);
   stats.mined++;
+  if ([ID.LOG, ID.BIRCH_LOG, ID.PINE_LOG].includes(id)) advance('wood');
+  if (id === ID.DIAMOND_ORE) advance('diamond');
   updateHotbar();
 }
 
@@ -528,6 +604,7 @@ function placeBlock(hit) {
   Snd.place(soundMat(id));
   if (mode !== 'creative') bag.consumeAt(sel);
   stats.placed++;
+  if (stats.placed >= 200) advance('build');
   updateHotbar();
   swing();
   queueFall(px, py, pz);
@@ -548,6 +625,67 @@ function useItem() {
   const st = bag.get(sel);
   if (!st) return false;
   const it = items[st.id];
+
+  // クワで土を耕す
+  if (it?.tool === TOOL.HOE && hit) {
+    const t = getBlock(hit.x, hit.y, hit.z);
+    if ((t === ID.GRASS || t === ID.DIRT || t === ID.PODZOL) && !getBlock(hit.x, hit.y + 1, hit.z)) {
+      changeBlock(hit.x, hit.y, hit.z, ID.FARMLAND);
+      Snd.dig('dirt');
+      particles.burst(hit.x, hit.y + .9, hit.z, '#6b4a2c', 8, .5);
+      damageTool(1);
+      hint('耕した土に種をまこう。草を壊すと種が手に入る');
+      return true;
+    }
+  }
+  // 種をまく
+  if (st.id === IT.SEEDS && hit) {
+    const { px, py, pz } = hit;
+    if (getBlock(px, py - 1, pz) === ID.FARMLAND && !getBlock(px, py, pz)) {
+      changeBlock(px, py, pz, ID.WHEAT, 0);
+      plantAt(px, py, pz);
+      if (mode !== 'creative') bag.consumeAt(sel);
+      Snd.place('grass');
+      updateHotbar();
+      return true;
+    }
+  }
+  // バケツで水や溶岩をすくう・置く
+  if (st.id === IT.BUCKET && hit) {
+    const liquid = getBlock(hit.x, hit.y, hit.z);
+    if (liquid === ID.WATER || liquid === ID.LAVA) {
+      changeBlock(hit.x, hit.y, hit.z, ID.AIR);
+      bag.set(sel, { id: liquid === ID.WATER ? IT.WATER_BUCKET : IT.LAVA_BUCKET, n: 1 });
+      Snd.splash();
+      updateHotbar();
+      return true;
+    }
+  }
+  if ((st.id === IT.WATER_BUCKET || st.id === IT.LAVA_BUCKET) && hit) {
+    const { px, py, pz } = hit;
+    if (!getBlock(px, py, pz)) {
+      changeBlock(px, py, pz, st.id === IT.WATER_BUCKET ? ID.WATER : ID.LAVA);
+      if (st.id === IT.LAVA_BUCKET) queueFluid(px, py, pz);
+      bag.set(sel, { id: IT.BUCKET, n: 1 });
+      Snd.splash();
+      updateHotbar();
+      return true;
+    }
+  }
+  // 小麦で動物を手なずける（繁殖）
+  if (st.id === IT.WHEAT_ITEM) {
+    camera.getWorldDirection(dir);
+    const m = mobs.pick(camera.getWorldPosition(new THREE.Vector3()), dir, 4);
+    if (m && !m.def.hostile) {
+      if (mobs.feed(m)) {
+        if (mode !== 'creative') bag.consumeAt(sel);
+        particles.burst(m.g.position.x - .5, m.g.position.y + 1, m.g.position.z - .5, '#ff6b8a', 8, .5);
+        Snd.pickup();
+        updateHotbar();
+        return true;
+      }
+    }
+  }
   if (it?.food && player.food < 20 && mode === 'survival') {
     player.food = Math.min(20, player.food + it.food);
     if (st.id === IT.MEAT_RAW && Math.random() < .3) { player.health = Math.max(1, player.health - 1); toast('生肉はおなかを壊しそうだ'); }
@@ -608,6 +746,7 @@ function explode(x, y, z, radius) {
   const pd = Math.hypot(player.pos.x - x, player.pos.y + 1 - y, player.pos.z - z);
   if (pd < radius + 2) {
     damage(Math.round(11 * Math.max(.2, 1 - pd / (radius + 2))), 'クリーパーの爆発');
+    if (player.health > 0) advance('boom');
     const k = Math.max(.4, 1 - pd / (radius + 2)) * 9;
     player.vel.y = k * .8;
     player.pos.x += (player.pos.x - x) / Math.max(.6, pd) * .6;
@@ -674,6 +813,8 @@ const DAY_LEN = 720;
 let sel = 0;
 const bag = new Inventory();           // 36スロットの持ち物（0-8 がホットバー）
 const drops = new Drops(scene);        // 落ちているアイテム
+const arrows = new Arrows(scene);      // 飛んでいる矢
+const armor = [null, null, null, null]; // 頭・胴・脚・足
 const chests = new Map();              // "x,y,z" -> 27スロット
 const furnaces = new Map();            // "x,y,z" -> かまどの状態
 let stats = { mined: 0, placed: 0, hunted: 0 };
@@ -744,6 +885,10 @@ function updateVitals() {
   $('vitals').classList.toggle('hidden', !surv);
   if (!surv) return;
   iconRow($('hearts'), player.health, '♥', '♥', '♡');
+  const ap = armorPoints();
+  const armEl = $('armor');
+  armEl.classList.toggle('hidden', ap <= 0);
+  iconRow(armEl, Math.min(20, ap), '🛡', '🛡', '·');
   iconRow($('food'), player.food, '🍖', '🍖', '·');
   const airEl = $('air');
   airEl.classList.toggle('hidden', player.air >= 10);
@@ -827,8 +972,11 @@ function renderScreen() {
     const res = currentResult();
     let cells = '';
     for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) cells += cellHTML('craft', r * 3 + c, craftGrid[r * 3 + c]);
+    const armorNames = ['頭', '胴', '脚', '足'];
+    const armorCells = armor.map((st, i) => cellHTML('armor', i, st, 'armorslot') + `<span>${armorNames[i]}</span>`).join('');
     top.innerHTML = `<div class="panelbox"><div class="rowhead"><span>クラフト</span><small>${n === 3 ? '3×3（作業台）' : '2×2（作業台を置くと3×3）'}</small></div>
       <div class="crafting">
+        <div class="armorcol">${armorCells}</div>
         <div class="craftgrid g${n}">${cells}</div>
         <div class="craftarrow">➜</div>
         <div class="resultwrap">${cellHTML('result', 0, res ? res.stack : null)}<span>できるもの</span></div>
@@ -916,13 +1064,21 @@ function takeResult(all) {
     craftOnce(craftGrid);
     made++;
   }
-  if (made) { Snd.craft(); stats.crafted = (stats.crafted || 0) + made; }
+  if (made) {
+    Snd.craft();
+    stats.crafted = (stats.crafted || 0) + made;
+    const oid = res.stack.id;
+    if (oid === ID.BENCH) advance('bench');
+    if ([IT.WOOD_PICK, IT.STONE_PICK, IT.IRON_PICK, IT.DIAMOND_PICK].includes(oid)) advance('pick');
+    if (oid === IT.BREAD) advance('bread');
+  }
   renderScreen();
 }
 
 // --- スロット操作 -----------------------------------------------------------
 function listFor(cont) {
   if (cont === 'inv') return bag.slots;
+  if (cont === 'armor') return armor;
   if (cont === 'craft') return craftGrid;
   if (cont === 'chest') return chestAt(...screenPos);
   if (cont === 'furnace') return furnaceAt(...screenPos).slots;
@@ -990,6 +1146,7 @@ function clickSlot(cont, i, right) {
   if (cont === 'furnace' && i === 2 && cursor) return;   // 焼き上がりには入れられない
 
   const st = list[i];
+  if (cont === 'armor' && cursor && items[cursor.id]?.armor !== i) { toast('そこには着られない'); return; }
   if (cursor) {
     if (!st) {                                     // 空きへ置く
       if (right) { list[i] = { id: cursor.id, n: 1, dur: cursor.dur }; cursor.n--; if (cursor.n <= 0) cursor = null; }
@@ -1002,6 +1159,12 @@ function clickSlot(cont, i, right) {
     } else if (!right) {                           // 入れ替え
       list[i] = cursor; cursor = st;
     }
+  } else if (st && cont === 'inv' && right && items[st.id]?.armor !== undefined) {
+    const slot = items[st.id].armor;               // 右クリックで着る
+    const old = armor[slot];
+    armor[slot] = st;
+    list[i] = old || null;
+    updateVitals();
   } else if (st) {
     if (right) {                                   // 半分だけ取る
       const half = Math.ceil(st.n / 2);
@@ -1083,6 +1246,80 @@ function updateFurnaces(dt) {
   if (bagOpen && screen === 'furnace') renderScreen();
 }
 
+// --- 水と溶岩の流れ ---------------------------------------------------------
+// meta を水位（0 が水源、数字が大きいほど薄い）として使う。
+const fluidQueue = [];
+const MAXLV = { [ID.WATER]: 7, [ID.LAVA]: 3 };
+function queueFluid(x, y, z) {
+  if (fluidQueue.length > 4000) return;
+  fluidQueue.push([x, y, z]);
+}
+function queueNeighborFluids(x, y, z) {
+  for (const [dx, dy, dz] of [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]]) {
+    const id = getBlock(x + dx, y + dy, z + dz);
+    if (id === ID.WATER || id === ID.LAVA) queueFluid(x + dx, y + dy, z + dz);
+  }
+}
+const replaceable = id => !id || blocks[id]?.plant;
+
+function updateFluids() {
+  let budget = 160;
+  while (fluidQueue.length && budget-- > 0) {
+    const [x, y, z] = fluidQueue.shift();
+    const id = getBlock(x, y, z);
+    if (id !== ID.WATER && id !== ID.LAVA) continue;
+    const lv = getMeta(x, y, z);
+    const other = id === ID.WATER ? ID.LAVA : ID.WATER;
+
+    // 水と溶岩が出会うと石になる
+    let met = false;
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
+      if (getBlock(x + dx, y + dy, z + dz) !== other) continue;
+      met = true;
+      if (id === ID.LAVA) changeBlock(x, y, z, lv === 0 ? ID.OBSIDIAN : ID.COBBLE);
+      else changeBlock(x + dx, y + dy, z + dz, ID.STONE);
+      Snd.splash();
+      particles.burst(x, y, z, '#d8d8d8', 10, .6);
+      break;
+    }
+    if (met) continue;
+
+    const below = getBlock(x, y - 1, z);
+    if (replaceable(below) && y > 0) {                     // 下へ落ちる
+      changeBlock(x, y - 1, z, id, 1);
+      queueFluid(x, y - 1, z);
+      continue;
+    }
+    if (lv >= MAXLV[id]) continue;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {   // 横へ広がる
+      const nb = getBlock(x + dx, y, z + dz);
+      if (!replaceable(nb)) continue;
+      if (nb && mode === 'survival') drops.spawn(nb, 1, x + dx + .5, y + .4, z + dz + .5);
+      changeBlock(x + dx, y, z + dz, id, lv + 1);
+      queueFluid(x + dx, y, z + dz);
+    }
+  }
+}
+
+// --- 農業 -------------------------------------------------------------------
+const crops = new Map();                 // "x,y,z" -> 育ち具合の待ち時間
+function plantAt(x, y, z) { crops.set(x + ',' + y + ',' + z, 12 + Math.random() * 26); }
+function updateCrops(dt) {
+  for (const [k, t] of crops) {
+    const left = t - dt;
+    const [x, y, z] = k.split(',').map(Number);
+    if (getBlock(x, y, z) !== ID.WHEAT) { crops.delete(k); continue; }
+    if (left > 0) { crops.set(k, left); continue; }
+    const m = getMeta(x, y, z);
+    if (m >= 3) { crops.delete(k); continue; }
+    const wet = getBlock(x, y - 1, z) === ID.FARMLAND;
+    setMeta(x, y, z, m + 1);
+    markDirty(x, y, z, x, y, z);
+    if (m + 1 < 3) crops.set(k, (wet ? 12 : 30) + Math.random() * 26);
+    else { crops.delete(k); advance('farm'); }
+  }
+}
+
 // --- 右クリックでの「使う」---------------------------------------------------
 function interact(hit) {
   const id = getBlock(hit.x, hit.y, hit.z);
@@ -1106,12 +1343,135 @@ function interact(hit) {
       if (!isNight()) { toast('夜になったら眠れる'); return true; }
       time = Math.ceil(time / DAY_LEN) * DAY_LEN + DAY_LEN * .27;
       player.health = Math.min(20, player.health + 4);
+      spawnPoint = [hit.x + .5, hit.y + 1.05, hit.z + .5];
+      advance('sleep');
       for (const mo of [...mobs.list]) if (mo.def.hostile) mobs.damage(mo, 999, null, () => {});
       toast('ぐっすり眠った。朝になった');
       updateVitals();
       return true;
     }
     default: return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 進捗（本家の「進捗」に当たるもの）
+// ---------------------------------------------------------------------------
+const ADVANCEMENTS = {
+  wood: ['木を手に入れた', '素手で木を殴るところから始まる'],
+  bench: ['作業台', '3×3 の格子でなんでも作れる'],
+  pick: ['石の時代へ', 'ツルハシを手に入れた'],
+  iron: ['鉄を手に入れた', 'かまどで原石を焼いた'],
+  diamond: ['ダイヤモンド！', '地下深くの輝き'],
+  cave: ['地下へ', '深さ 20 より下に潜った'],
+  peak: ['山の頂', '高さ 45 より上に立った'],
+  sleep: ['おやすみ', 'ベッドで夜を越した'],
+  farm: ['小麦を育てた', '種をまき、実りを刈った'],
+  bread: ['パンを焼いた', '自分で作った食べ物'],
+  boom: ['生き延びた', 'クリーパーの爆発から逃れた'],
+  swim: ['深く潜る', '水の底まで行った'],
+  build: ['建築家', 'ブロックを 200 個置いた'],
+};
+const earned = new Set();
+let advT;
+function advance(key) {
+  if (earned.has(key) || !ADVANCEMENTS[key]) return;
+  earned.add(key);
+  const [name, desc] = ADVANCEMENTS[key];
+  $('advName').textContent = name;
+  $('advDesc').textContent = desc;
+  $('toastAdv').classList.add('show');
+  Snd.craft();
+  clearTimeout(advT);
+  advT = setTimeout(() => $('toastAdv').classList.remove('show'), 5600);
+}
+
+// ---------------------------------------------------------------------------
+// チャットとコマンド
+// ---------------------------------------------------------------------------
+function chatLog(msg) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  $('chatLog').appendChild(d);
+  while ($('chatLog').children.length > 6) $('chatLog').firstChild.remove();
+  setTimeout(() => d.remove(), 12000);
+}
+function openChat() {
+  if (!playing) return;
+  playing = false;
+  document.exitPointerLock?.();
+  $('chatbar').classList.remove('hidden');
+  $('chatInput').value = '';
+  $('chatInput').focus();
+}
+function closeChat() {
+  $('chatbar').classList.add('hidden');
+  $('chatInput').blur();
+  if (started && !bagOpen) start();
+}
+const nameToId = q => {
+  const n = q.toLowerCase();
+  for (const b of blocks) if (b && (blockName(b.id) === q || String(b.id) === q)) return b.id;
+  for (const k of Object.keys(items)) if (blockName(+k) === q || k === q) return +k;
+  for (const b of blocks) if (b && blockName(b.id).toLowerCase().includes(n)) return b.id;
+  return null;
+};
+function runCommand(raw) {
+  const line = raw.replace(/^\//, '').trim();
+  if (!line) return;
+  const [cmd, ...args] = line.split(/\s+/);
+  switch (cmd) {
+    case 'help':
+      chatLog('time day|night|<数> / gamemode c|s / give <名前> [数] / tp <x> <y> <z>');
+      chatLog('weather clear|rain / spawn / kill / seed / fly / heal / clear');
+      break;
+    case 'time': {
+      const a = args[0];
+      const base = Math.floor(time / DAY_LEN) * DAY_LEN;
+      if (a === 'day') time = base + DAY_LEN * .3;
+      else if (a === 'night') time = base + DAY_LEN * .85;
+      else if (!isNaN(+a)) time = +a;
+      chatLog('時刻を変えた');
+      break;
+    }
+    case 'gamemode':
+      applyMode(args[0]?.startsWith('s') ? 'survival' : 'creative');
+      chatLog('モード：' + mode);
+      break;
+    case 'give': {
+      const id = nameToId(args[0] || '');
+      if (!id) { chatLog('そんなものは無い：' + args[0]); break; }
+      give(id, Math.min(640, +args[1] || 1));
+      chatLog(blockName(id) + ' を渡した');
+      break;
+    }
+    case 'tp': {
+      const [x, y, z] = args.map(Number);
+      if ([x, y, z].some(isNaN)) { chatLog('tp <x> <y> <z>'); break; }
+      player.pos.set(clamp(x, 1, W - 1), clamp(y, 1, H - 1), clamp(z, 1, W - 1));
+      player.vel.set(0, 0, 0);
+      unstick();
+      chatLog('移動した');
+      break;
+    }
+    case 'weather':
+      weather = args[0] === 'rain' ? 1 : 0;
+      weatherT = 600;
+      chatLog(weather ? '雨を降らせた' : '晴れにした');
+      break;
+    case 'spawn': {
+      const s2 = spawnPoint || findSpawn();
+      player.pos.set(s2[0], s2[1], s2[2]);
+      player.vel.set(0, 0, 0);
+      chatLog('スポーン地点へ戻った');
+      break;
+    }
+    case 'kill': die('コマンドで力尽きた'); break;
+    case 'heal': player.health = 20; player.food = 20; updateVitals(); chatLog('回復した'); break;
+    case 'fly': player.fly = !player.fly; chatLog(player.fly ? '飛行' : '着地'); break;
+    case 'seed': chatLog('シード値：' + seed); break;
+    case 'clear': bag.clear(); updateHotbar(); chatLog('持ち物を空にした'); break;
+    default: chatLog('知らないコマンド：' + cmd + '（help で一覧）');
   }
 }
 
@@ -1274,6 +1634,19 @@ function updateSky() {
     m.uniforms.uTorchLight.value.copy(cTorch);
     m.uniforms.uSkyLight.value.copy(cSun).lerp(WHITE, .2 + dayLight * .35);
   }
+  // 太陽と月を空に置く
+  const camPos = camera.position;
+  sunDisc.position.copy(sunDir).multiplyScalar(260).add(camPos);
+  sunDisc.lookAt(camPos);
+  sunDisc.visible = sunDir.y > -.25;
+  moonDisc.position.copy(sunDir).multiplyScalar(-260).add(camPos);
+  moonDisc.lookAt(camPos);
+  moonDisc.visible = sunDir.y < .25;
+  moonDisc.material.opacity = clamp(1 - dayLight * 1.2, .05, 1);
+  clouds.position.set(camPos.x, H + 30, camPos.z);
+  cloudTex.offset.x = (time * .004) % 1;
+  clouds.material.opacity = (.72 + rainLevel * .25) * clamp(dayLight * 1.7, .15, 1);
+  clouds.material.color.setScalar(clamp(.45 + dayLight * .7, .25, 1));
   sun.position.copy(sunDir).multiplyScalar(90).add(player.pos);
   sun.intensity = .35 + dayLight * 1.7;
   sun.color.copy(cSun);
@@ -1366,9 +1739,15 @@ function updatePlayer(dt) {
     bobT += dt * (player.sprint ? 11 : 8);
   }
 
-  // サボテンの棘
+  // 触れると痛いブロック（サボテン・溶岩・火）
   const bx = Math.floor(player.pos.x), bz = Math.floor(player.pos.z);
-  for (let y = 0; y < 2; y++) if (getBlock(bx, Math.floor(player.pos.y) + y, bz) === ID.CACTUS) damage(1, 'サボテンに刺さった');
+  for (let y = 0; y < 2; y++) {
+    const t = getBlock(bx, Math.floor(player.pos.y) + y, bz);
+    const hurtAmt = blocks[t]?.hurt;
+    if (!hurtAmt) continue;
+    damage(hurtAmt, t === ID.LAVA ? '溶岩に落ちた' : t === ID.FIRE ? '燃えてしまった' : 'サボテンに刺さった');
+    if (t === ID.LAVA) { player.vel.y = Math.max(player.vel.y, -1.2); particles.burst(bx, player.pos.y, bz, '#ff9a3c', 4, .5); }
+  }
 
   // 息
   if (mode === 'survival') {
@@ -1451,6 +1830,9 @@ addEventListener('keydown', e => {
     return;
   }
   if (e.code === 'F3') { $('debug').classList.toggle('hidden'); return; }
+  if (e.code === 'F1') { document.body.classList.toggle('nohud'); return; }
+  if (e.code === 'F2') { wantShot = true; toast('スクリーンショットを保存中…'); return; }
+  if (!bagOpen && playing && (e.code === 'KeyT' || e.code === 'Slash')) { e.preventDefault(); openChat(); return; }
   if (e.code === 'F5') { player.view = (player.view + 1) % 3; toast(['一人称', '三人称（背後）', '三人称（正面）'][player.view]); return; }
   if (!playing) return;
   keys[e.code] = true;
@@ -1473,6 +1855,14 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; touchMove.x = touchMove.y = 0; });
 document.addEventListener('visibilitychange', () => { if (document.hidden && playing) pause(); });
+
+$('chatInput').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') { const v = $('chatInput').value; closeChat(); if (v.trim()) runCommand(v); }
+  else if (e.key === 'Escape') closeChat();
+});
+$('respawn').onclick = respawn;
+$('deathMenu').onclick = () => { $('death').classList.add('hidden'); respawn(); pause(); };
 
 const canvas = $('game');
 canvas.oncontextmenu = e => e.preventDefault();
@@ -1531,11 +1921,12 @@ canvas.addEventListener('pointerdown', e => {
     tryLock();
   }
   if (e.button === 0) { mining = true; progress = 0; tryAttack(); }
-  else if (e.button === 2) rightClick();
+  else if (e.button === 2) { if (!startDraw()) rightClick(); }
 });
 addEventListener('pointerup', e => {
   if (e.pointerId === dragId) { dragging = false; dragId = null; }
   mining = false;
+  releaseDraw();
 });
 addEventListener('pointercancel', () => { dragging = false; dragId = null; mining = false; });
 addEventListener('pointermove', e => {
@@ -1556,6 +1947,29 @@ addEventListener('wheel', e => {
   sel = (sel + (e.deltaY > 0 ? 1 : 8)) % 9;
   updateHotbar();
 }, { passive: true });
+
+// --- 弓 ---------------------------------------------------------------------
+let drawing = 0;
+function startDraw() {
+  const st = bag.get(sel);
+  if (!st || !items[st.id]?.bow) return false;
+  if (mode === 'survival' && bag.count(IT.ARROW) <= 0) { toast('矢が無い'); return true; }
+  drawing = .0001;
+  return true;
+}
+function releaseDraw() {
+  if (!drawing) return;
+  const power = Math.min(1, drawing / 1.1);
+  drawing = 0;
+  if (power < .15) return;
+  if (mode === 'survival' && !bag.remove(IT.ARROW, 1)) return;
+  camera.getWorldDirection(dir);
+  const o = camera.getWorldPosition(new THREE.Vector3());
+  arrows.shoot(o.x + dir.x * .6, o.y + dir.y * .6 - .1, o.z + dir.z * .6, dir.x, dir.y, dir.z, power, true);
+  Snd.bow(power);
+  damageTool(1);
+  updateHotbar();
+}
 
 // 右クリック：設備を使う → 食べる → 置く
 function rightClick() {
@@ -1723,6 +2137,10 @@ Snd.setVolume(settings.vol / 100);
 const collectState = () => ({
   v: 3, seed, time, mode, sel, stats,
   bag: bag.toJSON(),
+  armor: armor.map(st => (st ? [st.id, st.n, st.dur ?? -1] : 0)),
+  crops: [...crops],
+  earned: [...earned],
+  spawnPoint, weather,
   drops: drops.toJSON(),
   chests: [...chests].map(([k, list]) => [k, list.map(st => (st ? [st.id, st.n, st.dur ?? -1] : 0))]),
   furnaces: [...furnaces].map(([k, f]) => [k, f.slots.map(st => (st ? [st.id, st.n] : 0)), f.fuel, f.cook]),
@@ -1739,6 +2157,14 @@ function applyState(s) {
     for (const [id, n] of Object.entries(s.inv)) if (n > 0) bag.add(+id, Math.min(n, 640));
   }
   if (s.drops) drops.fromJSON(s.drops);
+  armor.fill(null);
+  (s.armor || []).forEach((v, i) => { if (v) armor[i] = { id: v[0], n: v[1], ...(v[2] >= 0 ? { dur: v[2] } : {}) }; });
+  crops.clear();
+  (s.crops || []).forEach(([k, v]) => crops.set(k, v));
+  earned.clear();
+  (s.earned || []).forEach(k => earned.add(k));
+  spawnPoint = s.spawnPoint || null;
+  weather = s.weather || 0;
   (s.chests || []).forEach(([k, list]) => chests.set(k, list.map(v => (v ? { id: v[0], n: v[1], ...(v[2] >= 0 ? { dur: v[2] } : {}) } : null))));
   (s.furnaces || []).forEach(([k, list, fuel, cook]) => {
     const [x, y, z] = k.split(',').map(Number);
@@ -1755,7 +2181,8 @@ function applyState(s) {
 function rebuildAll() {
   for (const k of [...chunks.keys()]) disposeChunk(k);
   pending.clear();
-  for (let cx = 0; cx < CX; cx++) for (let cz = 0; cz < CX; cz++) pending.add(key(cx, cz));
+  for (let cx = 0; cx < CX; cx++) for (let cz = 0; cz < CX; cz++)
+    for (let cy = 0; cy < SECT; cy++) pending.add(key(cx, cy, cz));
   mapDirty = true;
 }
 function refreshSaveInfo() {
@@ -1820,15 +2247,17 @@ function setProgress(p, msg) {
 
 async function buildNear(radius, fromP) {
   const list = [];
+  const py = player.pos.y / CH;
   for (let cx = 0; cx < CX; cx++) for (let cz = 0; cz < CX; cz++) {
     const d = Math.hypot(cx + .5 - player.pos.x / CH, cz + .5 - player.pos.z / CH);
-    if (d <= radius) list.push([d, cx, cz]);
+    if (d > radius) continue;
+    for (let cy = 0; cy < SECT; cy++) list.push([d + Math.abs(cy - py) * .7, cx, cy, cz]);
   }
   list.sort((a, b) => a[0] - b[0]);
   for (let i = 0; i < list.length; i++) {
-    buildOne(list[i][1], list[i][2]);
-    pending.delete(key(list[i][1], list[i][2]));
-    if (i % 3 === 0) { setProgress(fromP + (1 - fromP) * (i / list.length), '世界を組み立てています'); await gap(); }
+    buildOne(list[i][1], list[i][2], list[i][3]);
+    pending.delete(key(list[i][1], list[i][2], list[i][3]));
+    if (i % 6 === 0) { setProgress(fromP + (1 - fromP) * (i / list.length), '世界を組み立てています'); await gap(); }
   }
 }
 
@@ -1856,7 +2285,7 @@ async function createWorld(newSeed) {
   time = 300;
   mobs.populate();
   rebuildAll();
-  await buildNear(4.2, .92);
+  await buildNear(3.2, .92);
   mapDirty = true;
   setProgress(1, '世界ができました');
   await gap();
@@ -1873,6 +2302,9 @@ $('new').onclick = async () => {
   started = false; playing = false;
   bag.clear();
   drops.clear();
+  arrows.clear();
+  armor.fill(null);
+  crops.clear();
   chests.clear(); furnaces.clear();
   if (mode === 'creative') CREATIVE_BAR.forEach((id, i) => bag.set(i, { id, n: maxStack(id) }));
   $('play').innerHTML = '世界に入る <span>↗</span>';
@@ -1889,6 +2321,21 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   layoutHeld();
 });
+
+let wantShot = false, fluidT = 0;
+function saveScreenshot() {
+  try {
+    renderer.domElement.toBlob(blob => {
+      if (!blob) { toast('保存できなかった'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `blockwild-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      toast('スクリーンショットを保存した');
+    }, 'image/png');
+  } catch { toast('保存できなかった'); }
+}
 
 let last = performance.now(), frames = 0, fps = 60, fpsT = 0, hudT = 0, spawnT = 0, furnaceT = 0;
 // 端末が重いときは自動で解像度を落とし、軽ければ戻す
@@ -1921,6 +2368,19 @@ function loop(now) {
       hitPlayer: n => damage(n, 'ゾンビにやられた'),
       onVoice: type => (type === 'fuse' ? Snd.fuse() : Snd.mob(type)),
       explode,
+      shoot: (x, y, z, dx, dy, dz) => { arrows.shoot(x, y, z, dx, dy + .12 * Math.hypot(dx, dz) * .1, dz, .45, false); Snd.bow(.5); },
+    });
+    if (drawing) drawing = Math.min(1.2, drawing + dt);
+    arrows.update(dt, {
+      player: player.pos,
+      pickMob: (x, y, z) => mobs.list.find(m => Math.abs(m.g.position.x - x) < .6 && Math.abs(m.g.position.z - z) < .6 && y > m.g.position.y && y < m.g.position.y + 2),
+      hitMob: (m, dmg) => {
+        Snd.hit();
+        const dead = mobs.damage(m, dmg, player.pos, (drop, n) => { if (mode === 'survival') drops.spawn(drop, n, m.g.position.x, m.g.position.y + .5, m.g.position.z); });
+        if (dead) { Snd.mob(m.type); stats.hunted++; }
+      },
+      hitPlayer: dmg => damage(dmg, '矢に射られた'),
+      onHitBlock: (x, y, z) => { if (mode === 'survival' && Math.random() < .5) drops.spawn(IT.ARROW, 1, x, y, z); },
     });
     drops.update(dt, player.pos, (id, n, dur) => {
       if (mode === 'creative') return 0;
@@ -1929,12 +2389,18 @@ function loop(now) {
       return left;
     });
     updateBlockPhysics(dt);
+    updateCrops(dt);
+    fluidT += dt;
+    if (fluidT > .22) { fluidT = 0; updateFluids(); }
     updateWeather(dt);
     furnaceT += dt;
     if (furnaceT > .25) { updateFurnaces(furnaceT); furnaceT = 0; }
     spawnT += dt;
     if (spawnT > 3) { spawnT = 0; if (mode === 'survival') mobs.trySpawnHostile(player.pos, isNight()); }
     if (isNight() && mode === 'survival') hint('夜になった。明かりを灯すか、家をつくって朝を待とう');
+    if (player.pos.y < 20) advance('cave');
+    if (player.pos.y > 45) advance('peak');
+    if (player.air < 4) advance('swim');
   } else if (ready && !started) {
     const a = now * .00004;
     const cx = W / 2 + Math.cos(a) * W * .42, cz = W / 2 + Math.sin(a) * W * .42;
@@ -1976,6 +2442,7 @@ function loop(now) {
     }
   }
   renderer.render(scene, camera);
+  if (wantShot) { wantShot = false; saveScreenshot(); }
   drawCalls = renderer.info.render.calls;
   drawTris = renderer.info.render.triangles;
   // 手元のものを別画角で重ねる
@@ -1996,7 +2463,10 @@ window.BLOCKWILD = {
   THREE, scene, camera, renderer, chunks, player, W3, matSolid, matAlpha, atlas, mobs, particles,
   changeBlock, toast, focus, raycastVoxel, give, mineBlock, placeBlock, canHarvest, breakSeconds, keys, settings, bag, drops, chests, furnaces,
   setTime: v => { time = v; },
-  openScreen, renderScreen, interact, updateFurnaces,
+  openScreen, renderScreen, interact, updateFurnaces, updateCrops, updateFluids, plantAt, queueFluid,
+  arrows, armor, crops, useItem, startDraw, releaseDraw, advance, runCommand, respawn, die,
+  selectSlot: i => { sel = clamp(i, 0, HOTBAR - 1); updateHotbar(); },
+  setDrawing: v => { drawing = v; },
   setWeather: v => { weather = v; weatherT = 600; },
   explode,
   get state() {

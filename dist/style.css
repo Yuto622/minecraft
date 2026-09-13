@@ -72,6 +72,8 @@ body.aiming #cross{opacity:1;transform:scale(1.15)}
 .icons.hearts i.e{color:#5a2b2b}
 .icons.food{font-size:13px}
 .icons.food i.e{opacity:.28}
+.icons.armor{font-size:12px}
+.icons.armor i.e{opacity:.2}
 .icons.air{color:#9fe6ff;font-size:12px}
 .icons.air i.e{opacity:.2}
 #selectedName{font-size:13px;margin:0 0 8px;color:#e9f6df;min-height:20px;letter-spacing:.5px}
@@ -160,6 +162,36 @@ h1{font-size:clamp(40px,5.4vw,74px);line-height:1.12;letter-spacing:-2.5px;margi
 .worldtag strong{font-size:20px;font-weight:600;line-height:1.5}
 @media (max-width:860px){.worldtag{display:none}}
 
+/* ---- 死亡画面 ---- */
+#death{background:linear-gradient(#3a0b0bd9,#160404f2);justify-content:center;text-align:center}
+.deathbox{max-width:520px;margin:auto}
+.deathbox h1{font-size:clamp(34px,6vw,58px);letter-spacing:-1px;margin:0 0 12px;color:#ffb4ad}
+.deathbox p{color:#e8cfcc;font-size:15px;margin:0 0 20px}
+.deathstats{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-bottom:26px;font-size:12px;color:#d8b6b2}
+.deathstats b{display:block;font-size:20px;color:#fff;font-weight:700}
+.deathbox .primary{justify-content:center;gap:10px;background:#e8d59a;color:#2a1410}
+.deathbox .ghost{width:100%;margin-top:10px;background:#ffffff14;border-color:#ffffff33;padding:13px}
+
+/* ---- チャットとコマンド ---- */
+#chatbar{position:fixed;left:50%;bottom:calc(max(14px,env(safe-area-inset-bottom)) + 132px);transform:translateX(-50%);
+  z-index:7;display:flex;align-items:center;gap:8px;width:min(640px,92vw);
+  background:#0b1618e8;border:1px solid var(--accent);border-radius:10px;padding:8px 12px}
+#chatbar span{color:var(--accent);font-weight:800}
+#chatbar input{flex:1;background:none;border:0;outline:0;color:var(--ink);font:14px/1.4 ui-monospace,monospace}
+#chatLog{position:fixed;left:var(--pad);bottom:calc(max(14px,env(safe-area-inset-bottom)) + 178px);z-index:6;
+  display:flex;flex-direction:column;gap:3px;pointer-events:none;max-width:min(560px,80vw)}
+#chatLog div{background:#0b1618b3;border-radius:6px;padding:3px 9px;font:12px/1.5 ui-monospace,monospace;color:#dfeee0;
+  animation:fade 12s forwards}
+@keyframes fade{0%,70%{opacity:1}100%{opacity:0}}
+
+/* ---- 進捗（実績）---- */
+#toastAdv{position:fixed;top:-140px;right:var(--pad);z-index:8;transition:top .5s cubic-bezier(.2,.8,.3,1);pointer-events:none}
+#toastAdv.show{top:calc(var(--pad) + 4px)}
+.advbox{background:#101f21f2;border:1px solid var(--accent);border-left-width:5px;border-radius:10px;padding:10px 16px;min-width:230px;box-shadow:0 12px 40px #0008}
+.advbox strong{display:block;font-size:14px;margin:2px 0}
+.advbox small{color:var(--dim);font-size:11px}
+body.nohud #hud-top,body.nohud #info,body.nohud #bottom,body.nohud #reticle,body.nohud #touch,body.nohud #chatLog{display:none}
+
 /* ---- 設定 / 持ち物 ---- */
 .panel,.bag{width:min(720px,100%);max-height:100%;overflow:auto;background:#0e1d1fe6;border:1px solid var(--line);border-radius:16px;padding:16px 18px;backdrop-filter:blur(16px);box-shadow:0 30px 80px #0007;margin:auto}
 .panel{width:min(520px,100%)}
@@ -196,6 +228,9 @@ h1{font-size:clamp(40px,5.4vw,74px);line-height:1.12;letter-spacing:-2.5px;margi
 .resultwrap{display:grid;gap:6px;justify-items:center}
 .resultwrap .cell{width:58px}
 .resultwrap span{font-size:11px;color:var(--dim)}
+.armorcol{display:grid;grid-template-columns:repeat(2,46px);gap:4px;align-content:start}
+.armorcol .cell{width:46px}
+.armorcol span{display:none}
 .fuelcol{display:grid;gap:6px;justify-items:center}
 .flame{width:22px;height:26px;background:linear-gradient(#ffd166,#e2571f);clip-path:polygon(50% 0,80% 40%,70% 60%,90% 75%,50% 100%,10% 75%,30% 60%,20% 40%);opacity:.25}
 .flame.on{opacity:1}

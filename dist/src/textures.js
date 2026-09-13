@@ -191,8 +191,89 @@ const painters = {
   door_bottom: t => { t.base('#9a6f3c', .06); t.rect(1, 1, 30, 30, '#825c30', .4); t.rect(4, 5, 24, 22, '#8a6234', .5); t.rect(4, 5, 24, 2, '#6b4a26', .7); t.rect(25, 12, 3, 5, '#d8c37a', .9); },
   bed_top: t => { t.base('#b03a34', .07); t.rect(2, 2, 28, 12, '#f2efe6', .9); t.rect(3, 3, 26, 9, '#ffffff', .5); t.rect(0, 0, TS, 2, '#8d2b26', .6); },
   bed_side: t => { t.base('#b03a34', .07); t.rect(0, 0, TS, 10, '#f2efe6', .85); t.rect(0, 24, TS, 8, '#9a7444', .9); },
+  farmland: t => { painters.dirt(t); t.rect(0, 0, TS, TS, '#4a3320', .35); for (let x = 3; x < TS; x += 8) t.rect(x, 0, 3, TS, '#2f2214', .5); t.speck('#5d4128', .1); },
+  hay: t => { t.base('#c8a33c', .07); for (let y = 0; y < TS; y += 5) t.line(0, y, TS - 1, y, '#a5831f', .5); t.speck('#dcb851', .14); },
+  hay_top: t => { t.base('#b08c2c', .08); t.rect(3, 3, 26, 26, '#d0aa46', .5); t.speck('#8f6e18', .12); },
+  pumpkin: t => { t.base('#d08a2a', .07); for (let x = 0; x < TS; x += 6) t.rect(x, 0, 2, TS, '#b06f1c', .55); t.rect(0, 0, TS, 2, '#8f5a16', .5); },
+  pumpkin_top: t => { t.base('#c07c22', .07); t.rect(13, 13, 6, 6, '#6f5a2a', .9); t.speck('#a86a1a', .1); },
+  pumpkin_face: t => { painters.pumpkin(t); t.rect(6, 9, 7, 6, '#3a2410', 1); t.rect(19, 9, 7, 6, '#3a2410', 1); t.rect(9, 19, 14, 5, '#3a2410', 1); t.rect(12, 17, 2, 3, '#3a2410', 1); t.rect(18, 17, 2, 3, '#3a2410', 1); },
+  pumpkin_lit: t => { painters.pumpkin(t); t.rect(6, 9, 7, 6, '#ffd166', 1); t.rect(19, 9, 7, 6, '#ffd166', 1); t.rect(9, 19, 14, 5, '#ffb347', 1); },
+  lava: t => { t.base('#d8500f', .1); t.blobs('#ffb347', 7, 3, 7, .8); t.blobs('#8f2d06', 5, 2, 5, .5); t.speck('#ffe08a', .06); },
+  fire: t => { t.clear(); for (let x = 0; x < TS; x++) { const h = 12 + Math.floor(Math.abs(Math.sin(x * .4)) * 16); for (let y = 0; y < h; y++) { const f = y / h; const c = f > .7 ? '#ffe08a' : f > .4 ? '#ff9a3c' : '#e2521f'; t.set(x, TS - 1 - y, hex2rgb(c), 235); } } },
   ladder: t => { t.clear(); t.rect(4, 0, 3, TS, '#a5813f', 1); t.rect(25, 0, 3, TS, '#a5813f', 1); for (let y = 3; y < TS; y += 9) t.rect(4, y, 24, 3, '#8d6c33', 1); },
 };
+
+// 小麦の成長（4段階）
+for (let s = 0; s < 4; s++) {
+  painters['wheat' + s] = t => {
+    t.clear();
+    srand(910 + s * 31);
+    const h = 9 + s * 6;
+    const col = s < 2 ? '#6f9c46' : s === 2 ? '#9fae4c' : '#d6b957';
+    for (let i = 0; i < 6; i++) {
+      const x = 3 + i * 5;
+      for (let y = 0; y < h; y++) {
+        const c = hex2rgb(y > h - 5 && s === 3 ? '#e2cc78' : col);
+        const f = .8 + (y / h) * .4;
+        t.set(x, TS - 1 - y, [c[0] * f, c[1] * f, c[2] * f], 255);
+        if (s === 3 && y > h - 6 && y % 2 === 0) { t.set(x - 1, TS - 1 - y, hex2rgb('#d6b957'), 255); t.set(x + 1, TS - 1 - y, hex2rgb('#d6b957'), 255); }
+      }
+    }
+  };
+}
+
+// 雲・太陽・月（アトラスとは別に使う）
+export function cloudTexture(size = 128) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  srand(4242);
+  // 大きめの塊をいくつか置いて、ブロックらしい雲にする
+  const grid = new Float32Array(size * size);
+  for (let k = 0; k < 46; k++) {
+    const cx = rnd() * size, cy = rnd() * size, r = 6 + rnd() * 15;
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
+      if (Math.hypot(x, y) > r) continue;
+      const px = ((cx + x) | 0 + size) % size, py = ((cy + y) | 0 + size) % size;
+      grid[(py * size + px + size * size) % (size * size)] = 1;
+    }
+  }
+  for (let i = 0; i < size * size; i++) {
+    const on = grid[i] > 0;
+    img.data[i * 4] = 255; img.data[i * 4 + 1] = 255; img.data[i * 4 + 2] = 255;
+    img.data[i * 4 + 3] = on ? 200 : 0;
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+export function discTexture(kind) {
+  const S = 32;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  if (kind === 'sun') {
+    const g = ctx.createRadialGradient(S / 2, S / 2, 2, S / 2, S / 2, S / 2);
+    g.addColorStop(0, '#fffdf0'); g.addColorStop(.55, '#ffe9a8'); g.addColorStop(1, '#ffd06a');
+    ctx.fillStyle = g;
+    ctx.fillRect(2, 2, S - 4, S - 4);
+  } else {
+    ctx.fillStyle = '#e8eef6';
+    ctx.fillRect(3, 3, S - 6, S - 6);
+    ctx.fillStyle = '#c3cede';
+    for (const [x, y, r] of [[10, 12, 3], [20, 9, 2], [16, 20, 4], [23, 22, 2]]) {
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  return tex;
+}
 
 // 破壊のひび（10段階）
 for (let i = 0; i < 10; i++) {
