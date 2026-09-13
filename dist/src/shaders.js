@@ -1,0 +1,114 @@
+// shaders.js — ボクセル用マテリアルと空のドーム
+import * as THREE from '../three.module.js';
+
+export function voxelMaterial(atlas, { transparent = false } = {}) {
+  const uniforms = THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    {
+      uAtlas: { value: null },
+      uDay: { value: 1 },              // 昼の明るさ 0..1
+      uSkyLight: { value: new THREE.Color('#ffffff') },
+      uTorchLight: { value: new THREE.Color('#ffb45a') },
+      uAmbient: { value: new THREE.Color('#20262e') },
+      uTime: { value: 0 },
+    },
+  ]);
+  uniforms.uAtlas.value = atlas;
+  const mat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms, fog: true, transparent,
+    depthWrite: true,
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */`
+      attribute float aLayer;
+      attribute vec3 aLight;   // x:空の光 y:光源の光 z:AO×面の陰影
+      attribute float aAnim;   // 1 なら水面として揺らす
+      varying vec2 vUv;
+      varying float vLayer;
+      varying vec3 vLight;
+      varying float vAnim;
+      uniform float uTime;
+      #include <fog_pars_vertex>
+      void main() {
+        vUv = uv; vLayer = aLayer; vLight = aLight; vAnim = aAnim;
+        vec3 transformed = position;
+        transformed.y -= aAnim * (0.10 + sin(uTime * 1.6 + position.x * 0.6 + position.z * 0.45) * 0.035);
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp sampler2DArray;
+      // GLSL3 では three が gl_FragColor を用意しないので自分で出力先を宣言する
+      layout(location = 0) out highp vec4 pc_fragColor;
+      #define gl_FragColor pc_fragColor
+      uniform sampler2DArray uAtlas;
+      uniform float uDay, uTime;
+      uniform vec3 uSkyLight, uTorchLight, uAmbient;
+      varying vec2 vUv;
+      varying float vLayer;
+      varying vec3 vLight;
+      varying float vAnim;
+      #include <fog_pars_fragment>
+      void main() {
+        vec2 uv = vUv + vec2(sin(uTime * .5 + vUv.y * 6.283) * .02, uTime * .03) * vAnim;
+        vec4 tex = texture(uAtlas, vec3(uv, vLayer));
+        ${transparent ? '' : 'if (tex.a < 0.5) discard;'}
+        float sky = pow(vLight.x, 1.35) * uDay;
+        float torch = pow(vLight.y, 1.6);
+        vec3 lit = uSkyLight * sky + uTorchLight * torch * 1.25 + uAmbient;
+        lit = min(lit, vec3(1.35));
+        gl_FragColor = vec4(tex.rgb * lit * vLight.z, tex.a);
+        #include <fog_fragment>
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  return mat;
+}
+
+// --- 空 ---------------------------------------------------------------------
+export function makeSky() {
+  const geo = new THREE.SphereGeometry(1, 32, 20);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: {
+      uTop: { value: new THREE.Color('#3f7fd0') },
+      uMid: { value: new THREE.Color('#9fd0e8') },
+      uBottom: { value: new THREE.Color('#cfe4ee') },
+      uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+      uSunColor: { value: new THREE.Color('#fff2cf') },
+      uStars: { value: 0 },
+    },
+    vertexShader: `varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec3 vDir;
+      uniform vec3 uTop, uMid, uBottom, uSunDir, uSunColor;
+      uniform float uStars;
+      float hash(vec3 p){ p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+      void main(){
+        vec3 d = normalize(vDir);
+        float h = clamp(d.y * 1.15 + .08, -1.0, 1.0);
+        vec3 col = h > 0.0 ? mix(uMid, uTop, pow(h, .65)) : mix(uMid, uBottom, clamp(-h * 3.0, 0.0, 1.0));
+        // 太陽・月まわりのにじみ
+        float s = max(dot(d, normalize(uSunDir)), 0.0);
+        col += uSunColor * pow(s, 90.0) * 2.2;
+        col += uSunColor * pow(s, 7.0) * .16;
+        col += uSunColor * pow(s, 2.2) * .05;
+        // 星
+        if (uStars > 0.001 && d.y > -0.05) {
+          vec3 g = floor(d * 190.0);
+          float st = hash(g);
+          if (st > 0.9965) col += vec3(st) * uStars * (0.6 + 0.4 * sin(hash(g + 3.0) * 40.0));
+        }
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.scale.setScalar(400);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  return mesh;
+}

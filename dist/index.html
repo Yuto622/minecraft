@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>BLOCKWILD — ブロックの世界</title>
+<meta name="description" content="森と山と湖の島を掘り、灯をともし、自分だけの場所をつくる3Dサンドボックス。">
+<meta name="theme-color" content="#0e1a1c">
+<link rel="icon" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game" aria-label="3Dブロック世界"></canvas>
+<div id="shade"></div>
+<div id="flash"></div>
+
+<header id="hud-top">
+  <div class="brand">B<span class="blk"></span>OCKWILD<small>ブロックの世界</small></div>
+  <div class="topright">
+    <span id="clock">☀ 1日目 06:00</span>
+    <canvas id="minimap" width="150" height="150" title="周辺の地図"></canvas>
+    <button id="menuButton" title="メニュー (Esc)">Ⅱ</button>
+  </div>
+</header>
+
+<aside id="info">
+  <span class="eyebrow">THE OVERWORLD</span>
+  <div id="biome">緑の丘陵</div>
+  <small id="coords"></small>
+</aside>
+
+<div id="debug" class="hidden"></div>
+
+<div id="reticle">
+  <div id="cross"><i></i><i></i></div>
+  <div id="target"></div>
+  <svg id="progress" viewBox="0 0 40 40" class="hidden"><circle cx="20" cy="20" r="16"></circle><circle cx="20" cy="20" r="16" id="progressArc"></circle></svg>
+</div>
+
+<div id="toast" role="status"></div>
+<div id="hint" role="note"></div>
+
+<div id="bottom">
+  <div id="bars">
+    <div class="bar" id="healthBar" title="体力"></div>
+    <div class="bar" id="foodBar" title="満腹度"></div>
+    <div class="bar" id="airBar" title="息"></div>
+  </div>
+  <div id="selectedName"></div>
+  <div id="hotbar"></div>
+  <div class="keyhelp" id="keyhelp">
+    <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動</span>
+    <span><kbd>Space</kbd> ジャンプ</span>
+    <span><kbd>Shift</kbd> ダッシュ</span>
+    <span><kbd>左</kbd>壊す <kbd>右</kbd>置く</span>
+    <span><kbd>E</kbd> 持ち物</span>
+    <span><kbd>F</kbd> 飛行</span>
+    <span><kbd>F3</kbd> 情報</span>
+  </div>
+</div>
+
+<div id="touch">
+  <div id="stick"><div id="stickKnob"></div></div>
+  <div class="actions">
+    <button id="touchJump" data-key="Space">跳ぶ</button>
+    <button id="touchMine">壊す</button>
+    <button id="touchPlace">置く</button>
+    <button id="touchBag">持物</button>
+  </div>
+</div>
+
+<section id="loading" class="overlay">
+  <div class="loadbox">
+    <div class="eyebrow">GENERATING WORLD</div>
+    <h2 id="loadMsg">大地を持ち上げています</h2>
+    <div class="progress"><div id="loadBar"></div></div>
+    <small id="loadTip"></small>
+  </div>
+</section>
+
+<section id="menu" class="overlay hidden">
+  <div class="menucontent">
+    <div class="eyebrow">A LITTLE BLOCK. A WHOLE WORLD.</div>
+    <h1>世界は、<br>君の手の中。</h1>
+    <p>島の森を抜け、洞窟に灯をともし、山の頂に自分の印を立てる。<br>ここにあるものは、すべて積み上げ直せる。</p>
+    <div class="choices">
+      <button class="choice active" data-mode="creative"><strong>クリエイティブ</strong><small>無限のブロックで自由に建築・飛行</small></button>
+      <button class="choice" data-mode="survival"><strong>サバイバル</strong><small>採掘・クラフト・夜のゾンビ</small></button>
+    </div>
+    <button id="play" class="primary">世界に入る <span>↗</span></button>
+    <div class="menulinks">
+      <button id="save">保存</button>
+      <button id="load">再開</button>
+      <button id="new">新しい世界</button>
+      <button id="export">書き出し</button>
+      <button id="import">読み込み</button>
+      <button id="settingsBtn">設定</button>
+    </div>
+    <div id="saveInfo">PC：マウスで視点 ／ スマホ：右側をドラッグ</div>
+    <small class="original">オリジナルのブロックサンドボックス · 音量と描画距離は設定から</small>
+  </div>
+  <div class="worldtag">
+    <span>01 / OPEN WORLD</span>
+    <strong id="worldName">まだ、何も決まっていない。</strong>
+    <span>EXPLORE · MINE · BUILD</span>
+  </div>
+</section>
+
+<section id="settings" class="overlay hidden">
+  <div class="panel">
+    <div class="panelhead"><h2>設定</h2><button class="close" data-close="settings">閉じる ×</button></div>
+    <label>描画距離 <output id="outDist"></output><input id="optDist" type="range" min="3" max="12" step="1"></label>
+    <label>視野角 <output id="outFov"></output><input id="optFov" type="range" min="60" max="105" step="1"></label>
+    <label>マウス感度 <output id="outSens"></output><input id="optSens" type="range" min="4" max="40" step="1"></label>
+    <label>音量 <output id="outVol"></output><input id="optVol" type="range" min="0" max="100" step="1"></label>
+    <label class="check"><input id="optHints" type="checkbox"> ヒントを表示する</label>
+    <label class="check"><input id="optBob" type="checkbox"> 歩行の揺れ</label>
+  </div>
+</section>
+
+<section id="inventory" class="overlay hidden">
+  <div class="bag">
+    <div class="baghead">
+      <div><span class="eyebrow">YOUR BACKPACK</span><h2>持ち物とクラフト</h2></div>
+      <button class="close" data-close="inventory">閉じる ×</button>
+    </div>
+    <div class="bagcols">
+      <div>
+        <h3>ブロックと道具 <small id="invHint">クリックでスロットにセット</small></h3>
+        <div id="blocks"></div>
+      </div>
+      <div>
+        <h3>クラフト <small id="benchState"></small></h3>
+        <div id="recipes"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>
