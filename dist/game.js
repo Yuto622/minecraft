@@ -22,7 +22,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
-const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, hints: true, bob: true, buttons: false, dropOnDeath: true };
+const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, music: 45, hints: true, bob: true, buttons: false, dropOnDeath: true };
 const settings = Object.assign({}, defaults, JSON.parse(localStorage.getItem('blockwild-settings') || '{}'));
 const saveSettings = () => localStorage.setItem('blockwild-settings', JSON.stringify(settings));
 
@@ -52,11 +52,11 @@ const sky = makeSky();
 scene.add(sky);
 
 // 雲の層（本家と同じく、世界の上をゆっくり流れる）
-const cloudTex = cloudTexture(128);
-cloudTex.repeat.set(26, 26);
+const cloudTex = cloudTexture(256);
+cloudTex.repeat.set(8, 8);
 const clouds = new THREE.Mesh(
   new THREE.PlaneGeometry(760, 760),
-  new THREE.MeshLambertMaterial({ map: cloudTex, transparent: true, opacity: .82, depthWrite: false, fog: false, side: THREE.DoubleSide })
+  new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: .82, depthWrite: false, fog: false, side: THREE.DoubleSide })
 );
 clouds.rotation.x = -Math.PI / 2;
 clouds.position.set(W / 2, H + 30, W / 2);
@@ -1646,7 +1646,7 @@ function updateSky() {
   clouds.position.set(camPos.x, H + 30, camPos.z);
   cloudTex.offset.x = (time * .004) % 1;
   clouds.material.opacity = (.72 + rainLevel * .25) * clamp(dayLight * 1.7, .15, 1);
-  clouds.material.color.setScalar(clamp(.45 + dayLight * .7, .25, 1));
+  clouds.material.color.copy(cMid).lerp(WHITE, clamp(dayLight * .9 + .25, .3, 1));
   sun.position.copy(sunDir).multiplyScalar(90).add(player.pos);
   sun.intensity = .35 + dayLight * 1.7;
   sun.color.copy(cSun);
@@ -2039,12 +2039,14 @@ function start() {
   playing = true; started = true;
   camera.fov = settings.fov; camera.updateProjectionMatrix(); layoutHeld();
   Snd.resume();
+  Snd.music(settings.music > 0);
   tryLock();
   updateHotbar(); updateVitals();
 }
 const resume = () => { closeOverlays(); start(); };
 function pause() {
   playing = false; mining = false;
+  Snd.music(false);
   for (const k in keys) keys[k] = false;
   touchMove.x = touchMove.y = 0;
   document.exitPointerLock?.();
@@ -2115,6 +2117,7 @@ bindOption('optDist', 'outDist', 'dist', v => v + ' チャンク', () => cullChu
 bindOption('optFov', 'outFov', 'fov', v => v + '°', v => { camera.fov = v; camera.updateProjectionMatrix(); layoutHeld(); });
 bindOption('optSens', 'outSens', 'sens', v => String(v));
 bindOption('optVol', 'outVol', 'vol', v => v + '%', v => Snd.setVolume(v / 100));
+bindOption('optMusic', 'outMusic', 'music', v => v + '%', v => { Snd.musicVolume(v / 100); Snd.music(v > 0 && playing); });
 function applyButtons() {
   const on = !!settings.buttons && !isTouch;
   document.body.classList.toggle('buttons', on);
@@ -2130,6 +2133,7 @@ $('optBob').checked = settings.bob;
 $('optBob').onchange = () => { settings.bob = $('optBob').checked; saveSettings(); };
 $('settingsBtn').onclick = () => $('settings').classList.remove('hidden');
 Snd.setVolume(settings.vol / 100);
+Snd.musicVolume(settings.music / 100);
 
 // ---------------------------------------------------------------------------
 // セーブ／ロード

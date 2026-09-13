@@ -95,3 +95,68 @@ export function rain(level) {
 }
 export function bow(power) { tone(300 + power * 260, .22, .1, 'triangle', 2.1); noise(.08, .12, 1800, 'bandpass', 2); }
 export function ui(up = true) { tone(up ? 660 : 440, .07, .05, 'sine'); }
+
+// --- BGM --------------------------------------------------------------------
+// 本家のような「間のある、ゆっくりした」音楽を手続きで生成する。
+// 決まった曲ではなく、音階から少しずつ選んで置いていく。
+let musicOn = false, musicTimer = null, pieceEnd = 0;
+const SCALES = [
+  [0, 2, 4, 7, 9, 12, 14, 16, 19],        // メジャー・ペンタトニック
+  [0, 2, 3, 5, 7, 10, 12, 14, 15],        // ドリアン
+  [0, 2, 4, 5, 7, 9, 11, 12, 16],         // イオニアン
+];
+let scale = SCALES[0], root = 261.63;
+
+function piano(freq, when, dur, vol) {
+  if (!ctx) return;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(.0001, when);
+  g.gain.exponentialRampToValueAtTime(vol, when + .04);
+  g.gain.exponentialRampToValueAtTime(vol * .32, when + dur * .35);
+  g.gain.exponentialRampToValueAtTime(.0001, when + dur);
+  g.connect(musicGain);
+  // 基音と、少しずれた倍音を重ねて柔らかい音に
+  for (const [mult, level, type] of [[1, 1, 'sine'], [2, .28, 'sine'], [3, .12, 'triangle']]) {
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(freq * mult * (1 + (Math.random() - .5) * .002), when);
+    const og = ctx.createGain();
+    og.gain.value = level;
+    o.connect(og); og.connect(g);
+    o.start(when); o.stop(when + dur + .05);
+  }
+}
+
+function scheduleNote() {
+  if (!musicOn || !ctx) return;
+  const now = ctx.currentTime;
+  if (now > pieceEnd) {                       // 1曲おわり。しばらく静かにする
+    musicTimer = setTimeout(scheduleNote, (90 + Math.random() * 180) * 1000);
+    scale = SCALES[(Math.random() * SCALES.length) | 0];
+    root = [196, 220, 261.63, 293.66][(Math.random() * 4) | 0];
+    pieceEnd = now + 70 + Math.random() * 60 + (90 + Math.random() * 180);
+    return;
+  }
+  const step = scale[(Math.random() * scale.length) | 0];
+  const oct = Math.random() < .25 ? 2 : 1;
+  const f = root * Math.pow(2, step / 12) * oct;
+  const dur = 2.2 + Math.random() * 2.6;
+  piano(f, now + .05, dur, .16);
+  if (Math.random() < .35) {                  // ときどき重ねる
+    const s2 = scale[(Math.random() * scale.length) | 0];
+    piano(root * Math.pow(2, s2 / 12) * (oct === 2 ? 1 : 2), now + .05 + Math.random() * .4, dur * .8, .09);
+  }
+  const gap = 1.4 + Math.random() * 3.2;
+  musicTimer = setTimeout(scheduleNote, gap * 1000);
+}
+
+export function music(on) {
+  init();
+  if (on === musicOn) return;
+  musicOn = on;
+  clearTimeout(musicTimer);
+  if (!on) return;
+  pieceEnd = (ctx?.currentTime || 0) + 70 + Math.random() * 60;
+  musicTimer = setTimeout(scheduleNote, (12 + Math.random() * 30) * 1000);
+}
+export function musicVolume(v) { init(); if (musicGain) musicGain.gain.value = v * .5; }

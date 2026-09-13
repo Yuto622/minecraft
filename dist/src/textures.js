@@ -208,15 +208,22 @@ for (let s = 0; s < 4; s++) {
   painters['wheat' + s] = t => {
     t.clear();
     srand(910 + s * 31);
-    const h = 9 + s * 6;
-    const col = s < 2 ? '#6f9c46' : s === 2 ? '#9fae4c' : '#d6b957';
-    for (let i = 0; i < 6; i++) {
-      const x = 3 + i * 5;
-      for (let y = 0; y < h; y++) {
-        const c = hex2rgb(y > h - 5 && s === 3 ? '#e2cc78' : col);
-        const f = .8 + (y / h) * .4;
-        t.set(x, TS - 1 - y, [c[0] * f, c[1] * f, c[2] * f], 255);
-        if (s === 3 && y > h - 6 && y % 2 === 0) { t.set(x - 1, TS - 1 - y, hex2rgb('#d6b957'), 255); t.set(x + 1, TS - 1 - y, hex2rgb('#d6b957'), 255); }
+    const h = 10 + s * 6;
+    const col = s < 2 ? '#5f9440' : s === 2 ? '#9aa848' : '#cdae4e';
+    for (let i = 0; i < 5; i++) {
+      const x = 3 + i * 6 + ((i % 2) ? 1 : 0);
+      const hh = h - (i % 2) * 2;
+      for (let y = 0; y < hh; y++) {
+        const head = s >= 2 && y > hh - 7;
+        const c = hex2rgb(head ? (s === 3 ? '#e8cf7a' : '#b9bb5c') : col);
+        const f = .82 + (y / hh) * .34;
+        const yy = TS - 1 - y;
+        t.set(x, yy, [c[0] * f, c[1] * f, c[2] * f], 255);
+        t.set(x + 1, yy, [c[0] * f * .88, c[1] * f * .88, c[2] * f * .88], 255);
+        if (head && y % 2 === 0) {                       // 穂
+          t.set(x - 1, yy, hex2rgb(s === 3 ? '#f0dc96' : '#c3c76a'), 255);
+          t.set(x + 2, yy, hex2rgb(s === 3 ? '#d9bd63' : '#aeb254'), 255);
+        }
       }
     }
   };
@@ -231,8 +238,8 @@ export function cloudTexture(size = 128) {
   srand(4242);
   // 大きめの塊をいくつか置いて、ブロックらしい雲にする
   const grid = new Float32Array(size * size);
-  for (let k = 0; k < 46; k++) {
-    const cx = rnd() * size, cy = rnd() * size, r = 6 + rnd() * 15;
+  for (let k = 0; k < 58; k++) {
+    const cx = rnd() * size, cy = rnd() * size, r = 8 + rnd() * 20;
     for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
       if (Math.hypot(x, y) > r) continue;
       const px = ((cx + x) | 0 + size) % size, py = ((cy + y) | 0 + size) % size;
@@ -384,6 +391,41 @@ export function iconURL(id, size = 64) {
       ctx.fillStyle = '#9a7444';
       ctx.save(); ctx.translate(size / 2, size / 2); ctx.rotate(-.5);
       ctx.fillRect(-1.4 * s, -6 * s, 2.8 * s, 12 * s); ctx.restore();
+    } else if (it.armor !== undefined) {           // 防具
+      const s2 = size / 16;
+      const dark = '#00000038';
+      ctx.fillStyle = it.color;
+      if (it.armor === 0) {                        // 兜
+        ctx.fillRect(3 * s2, 3 * s2, 10 * s2, 7 * s2);
+        ctx.fillRect(2 * s2, 5 * s2, 12 * s2, 6 * s2);
+        ctx.fillStyle = dark; ctx.fillRect(5 * s2, 7 * s2, 6 * s2, 4 * s2);
+      } else if (it.armor === 1) {                 // 胴
+        ctx.fillRect(4 * s2, 3 * s2, 8 * s2, 10 * s2);
+        ctx.fillRect(1.5 * s2, 4 * s2, 3 * s2, 6 * s2);
+        ctx.fillRect(11.5 * s2, 4 * s2, 3 * s2, 6 * s2);
+        ctx.fillStyle = dark; ctx.fillRect(6 * s2, 5 * s2, 4 * s2, 6 * s2);
+      } else if (it.armor === 2) {                 // 脚
+        ctx.fillRect(3.5 * s2, 2 * s2, 9 * s2, 4 * s2);
+        ctx.fillRect(3.5 * s2, 6 * s2, 3.5 * s2, 8 * s2);
+        ctx.fillRect(9 * s2, 6 * s2, 3.5 * s2, 8 * s2);
+      } else {                                     // 足
+        ctx.fillRect(2.5 * s2, 6 * s2, 5 * s2, 6 * s2);
+        ctx.fillRect(8.5 * s2, 6 * s2, 5 * s2, 6 * s2);
+        ctx.fillStyle = dark; ctx.fillRect(2.5 * s2, 11 * s2, 11 * s2, 2 * s2);
+      }
+    } else if (it.bow) {                           // 弓
+      const s2 = size / 16;
+      ctx.strokeStyle = '#a5813f'; ctx.lineWidth = 1.6 * s2;
+      ctx.beginPath(); ctx.arc(5 * s2, 8 * s2, 6 * s2, -1.1, 1.1); ctx.stroke();
+      ctx.strokeStyle = '#e8e6dc'; ctx.lineWidth = .7 * s2;
+      ctx.beginPath(); ctx.moveTo(7.6 * s2, 2.6 * s2); ctx.lineTo(7.6 * s2, 13.4 * s2); ctx.stroke();
+    } else if (id === 161) {                       // 矢
+      const s2 = size / 16;
+      ctx.strokeStyle = '#b9b3a6'; ctx.lineWidth = 1.2 * s2;
+      ctx.beginPath(); ctx.moveTo(3 * s2, 13 * s2); ctx.lineTo(12 * s2, 4 * s2); ctx.stroke();
+      ctx.fillStyle = '#5a5f63';
+      ctx.beginPath(); ctx.moveTo(13.5 * s2, 2.5 * s2); ctx.lineTo(10 * s2, 4 * s2); ctx.lineTo(12 * s2, 6 * s2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#e8e6dc'; ctx.fillRect(2 * s2, 12 * s2, 3 * s2, 2.4 * s2);
     } else {
       ctx.fillStyle = it.color || '#ccc';
       ctx.beginPath();

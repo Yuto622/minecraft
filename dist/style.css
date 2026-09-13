@@ -228,9 +228,9 @@ body.nohud #hud-top,body.nohud #info,body.nohud #bottom,body.nohud #reticle,body
 .resultwrap{display:grid;gap:6px;justify-items:center}
 .resultwrap .cell{width:58px}
 .resultwrap span{font-size:11px;color:var(--dim)}
-.armorcol{display:grid;grid-template-columns:repeat(2,46px);gap:4px;align-content:start}
+.armorcol{display:grid;grid-template-columns:auto;gap:3px;align-content:start;position:relative}
 .armorcol .cell{width:46px}
-.armorcol span{display:none}
+.armorcol span{position:absolute;left:52px;font-size:10px;color:var(--dim);pointer-events:none;display:none}
 .fuelcol{display:grid;gap:6px;justify-items:center}
 .flame{width:22px;height:26px;background:linear-gradient(#ffd166,#e2571f);clip-path:polygon(50% 0,80% 40%,70% 60%,90% 75%,50% 100%,10% 75%,30% 60%,20% 40%);opacity:.25}
 .flame.on{opacity:1}
