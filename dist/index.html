@@ -41,20 +41,23 @@
 <div id="hint" role="note"></div>
 
 <div id="bottom">
-  <div id="bars">
-    <div class="bar" id="healthBar" title="体力"></div>
-    <div class="bar" id="foodBar" title="満腹度"></div>
-    <div class="bar" id="airBar" title="息"></div>
+  <div id="vitals" class="hidden">
+    <div class="icons hearts" id="hearts" title="体力"></div>
+    <div class="icons food" id="food" title="満腹度"></div>
+    <div class="icons air hidden" id="air" title="息"></div>
   </div>
   <div id="selectedName"></div>
   <div id="hotbar"></div>
   <div class="keyhelp" id="keyhelp">
     <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動</span>
     <span><kbd>Space</kbd> ジャンプ</span>
-    <span><kbd>Shift</kbd> ダッシュ</span>
+    <span><kbd>Ctrl</kbd> ダッシュ</span>
+    <span><kbd>Shift</kbd> スニーク</span>
     <span><kbd>左</kbd>壊す <kbd>右</kbd>置く</span>
     <span><kbd>E</kbd> 持ち物</span>
     <span><kbd>F</kbd> 飛行</span>
+    <span><kbd>F5</kbd> 視点</span>
+    <span><kbd>Q</kbd> 捨てる</span>
     <span><kbd>F3</kbd> 情報</span>
   </div>
 </div>
@@ -125,20 +128,29 @@
 <section id="inventory" class="overlay hidden">
   <div class="bag">
     <div class="baghead">
-      <div><span class="eyebrow">YOUR BACKPACK</span><h2>持ち物とクラフト</h2></div>
+      <div><span class="eyebrow" id="screenKind">INVENTORY</span><h2 id="screenTitle">持ち物</h2></div>
       <button class="close" data-close="inventory">閉じる ×</button>
     </div>
-    <div class="bagcols">
-      <div>
-        <h3>ブロックと道具 <small id="invHint">クリックでスロットにセット</small></h3>
-        <div id="blocks"></div>
-      </div>
-      <div>
-        <h3>クラフト <small id="benchState"></small></h3>
-        <div id="recipes"></div>
-      </div>
+
+    <div id="screenTop"></div>
+
+    <div class="panelbox" id="creativeBox">
+      <div class="rowhead"><span>クリエイティブ・全ブロック</span><small>クリックで手に持つ／スロットへ</small></div>
+      <div id="creativeGrid" class="grid"></div>
+    </div>
+
+    <div class="panelbox">
+      <div class="rowhead"><span>持ち物</span><small id="bagHint">左クリックで掴む・置く／右クリックで1個ずつ／数字キーでホットバーへ</small></div>
+      <div id="invGrid" class="grid"></div>
+      <div id="hotGrid" class="grid hot"></div>
+    </div>
+
+    <div class="panelbox" id="recipeBook">
+      <div class="rowhead"><span>レシピ帳</span><small>クリックすると格子に材料を並べます</small></div>
+      <div id="recipes"></div>
     </div>
   </div>
+  <div id="cursorStack"></div>
 </section>
 
 <script type="module" src="game.js"></script>

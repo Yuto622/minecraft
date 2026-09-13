@@ -1,5 +1,5 @@
 // audio.js — WebAudio による手続き効果音（音声ファイル不要）
-let ctx = null, master = null, noiseBuf = null, musicGain = null, ambGain = null;
+let ctx = null, master = null, noiseBuf = null, musicGain = null, ambGain = null, rainGain = null;
 
 function init() {
   if (ctx) return ctx;
@@ -76,5 +76,21 @@ export function hit() { noise(.2, .1, 260, 'lowpass', 1.2); tone(180, .1, .1, 's
 export function mob(type) {
   const base = { pig: 380, cow: 180, sheep: 520, chicken: 900, zombie: 120 }[type] || 400;
   tone(base, .3, .08, type === 'zombie' ? 'sawtooth' : 'triangle', type === 'zombie' ? .6 : 1.35);
+}
+export function fuse() { tone(1200, .5, .1, 'square', .35); noise(.09, .5, 2400, 'bandpass', 3); }
+export function explode() {
+  noise(.5, .9, 180, 'lowpass', .6);
+  noise(.35, .35, 900, 'bandpass', .8);
+  tone(70, .8, .3, 'sawtooth', .35);
+}
+export function rain(level) {
+  if (!init()) return;
+  if (!rainGain) {
+    rainGain = ctx.createGain(); rainGain.gain.value = 0; rainGain.connect(master);
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+    const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1100;
+    s.connect(f); f.connect(rainGain); s.start();
+  }
+  rainGain.gain.setTargetAtTime(level * .13, ctx.currentTime, 1.5);
 }
 export function ui(up = true) { tone(up ? 660 : 440, .07, .05, 'sine'); }

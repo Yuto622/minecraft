@@ -12,6 +12,9 @@ export const ID = {
   DARK_PLANKS: 30, GLOWSTONE: 31, ICE: 32, TALL_GRASS: 33, ROSE: 34,
   DAISY: 35, MUSHROOM: 36, TORCH: 37, WOOL_W: 38, WOOL_R: 39, WOOL_B: 40,
   WOOL_Y: 41, WOOL_K: 42, WOOL_G: 43, PODZOL: 44, OBSIDIAN: 45, SNOW_GRASS: 46,
+  FURNACE: 47, FURNACE_LIT: 48, CHEST: 49, STONE_SLAB: 50, COBBLE_SLAB: 51,
+  WOOD_SLAB: 52, COBBLE_STAIRS: 53, WOOD_STAIRS: 54, FENCE: 55, DOOR: 56,
+  GLASS_PANE: 57, BED: 58, STONE_BRICK: 59, LADDER: 60, TNT: 61,
 };
 
 // --- アイテム（100番台）-----------------------------------------------------
@@ -21,6 +24,7 @@ export const IT = {
   WOOD_AXE: 120, STONE_AXE: 121, IRON_AXE: 122,
   WOOD_SHOVEL: 130, STONE_SHOVEL: 131, IRON_SHOVEL: 132,
   SWORD: 140, IRON_SWORD: 141,
+  MEAT_RAW: 106, WOOL_ITEM: 107, FLINT: 108,
 };
 
 export const TOOL = { NONE: 0, PICK: 1, AXE: 2, SHOVEL: 3, SWORD: 4 };
@@ -33,6 +37,8 @@ export const items = {
   [IT.IRON]:         { name: '鉄インゴット', color: '#dcdcdc' },
   [IT.DIAMOND]:      { name: 'ダイヤモンド', color: '#5ee6d8' },
   [IT.MEAT]:         { name: '焼けた肉', color: '#b4593c', food: 6 },
+  [IT.MEAT_RAW]:     { name: '生の肉', color: '#d4796a', food: 2 },
+  [IT.FLINT]:        { name: '火打石', color: '#3c3f44' },
   [IT.WOOD_PICK]:    { name: '木のツルハシ', color: '#bb965e', tool: TOOL.PICK, tier: 1, speed: 2.2, dur: 60 },
   [IT.STONE_PICK]:   { name: '石のツルハシ', color: '#8b918d', tool: TOOL.PICK, tier: 2, speed: 4, dur: 132 },
   [IT.IRON_PICK]:    { name: '鉄のツルハシ', color: '#d8d8d8', tool: TOOL.PICK, tier: 3, speed: 6.5, dur: 250 },
@@ -53,7 +59,7 @@ export const isItem = id => id >= 100;
 // tiles: [top, side, bottom] のテクスチャキー
 // hard: 硬さ(秒) / tool: 有効な道具 / tier: 必要ツールレベル(0=素手可)
 export const blocks = [];
-function def(id, o) { blocks[id] = Object.assign({ id, hard: .6, tool: TOOL.NONE, tier: 0, solid: true, opaque: true, absorb: 15, emit: 0 }, o); }
+function def(id, o) { blocks[id] = Object.assign({ id, hard: .6, tool: TOOL.NONE, tier: 0, solid: true, opaque: true, full: true, absorb: 15, emit: 0 }, o); }
 
 def(ID.AIR, { name: '空気', solid: false, opaque: false, absorb: 0 });
 def(ID.GRASS, { name: '草ブロック', tiles: ['grass_top', 'grass_side', 'dirt'], color: '#7cae4e', hard: .6, tool: TOOL.SHOVEL, drop: ID.DIRT });
@@ -102,6 +108,32 @@ def(ID.WOOL_B, { name: '青の羊毛', tiles: ['wool_b'], color: '#3a5ea8', hard
 def(ID.WOOL_Y, { name: '黄の羊毛', tiles: ['wool_y'], color: '#d6ab3a', hard: .8 });
 def(ID.WOOL_K, { name: '黒の羊毛', tiles: ['wool_k'], color: '#2b2b30', hard: .8 });
 def(ID.WOOL_G, { name: '緑の羊毛', tiles: ['wool_g'], color: '#4e7a35', hard: .8 });
+
+// --- 形のあるブロック -------------------------------------------------------
+// boxes: [x0,y0,z0,x1,y1,z1] の並び（0..1 のブロック内座標）。
+// full=false のブロックは隣の面を隠さない。rot=true は向き(meta)を持つ。
+def(ID.STONE_BRICK, { name: '石レンガ', tiles: ['stone_brick'], color: '#8a8f8c', hard: 2, tool: TOOL.PICK, tier: 1 });
+def(ID.FURNACE, { name: 'かまど', tiles: ['furnace_top', 'furnace_side', 'furnace_top'], front: 'furnace_front', color: '#7b8080', hard: 3.5, tool: TOOL.PICK, tier: 1, rot: true, interact: 'furnace' });
+def(ID.FURNACE_LIT, { name: 'かまど（燃焼中）', tiles: ['furnace_top', 'furnace_side', 'furnace_top'], front: 'furnace_lit', color: '#8b7f6f', hard: 3.5, tool: TOOL.PICK, tier: 1, rot: true, emit: 13, interact: 'furnace', drop: ID.FURNACE });
+def(ID.CHEST, { name: 'チェスト', tiles: ['chest_top', 'chest_side', 'chest_top'], front: 'chest_front', color: '#a97c3f', hard: 2.5, tool: TOOL.AXE, rot: true, interact: 'chest',
+  full: false, opaque: false, absorb: 0, boxes: [[.0625, 0, .0625, .9375, .875, .9375]] });
+def(ID.STONE_SLAB, { name: '石のハーフブロック', tiles: ['stone'], color: '#8d9490', hard: 1.6, tool: TOOL.PICK, tier: 1, slab: true, full: false, opaque: false, absorb: 0, boxes: [[0, 0, 0, 1, .5, 1]] });
+def(ID.COBBLE_SLAB, { name: '丸石のハーフブロック', tiles: ['cobble'], color: '#787f7e', hard: 2, tool: TOOL.PICK, tier: 1, slab: true, full: false, opaque: false, absorb: 0, boxes: [[0, 0, 0, 1, .5, 1]] });
+def(ID.WOOD_SLAB, { name: '木のハーフブロック', tiles: ['planks'], color: '#bb965e', hard: 1, tool: TOOL.AXE, slab: true, full: false, opaque: false, absorb: 0, boxes: [[0, 0, 0, 1, .5, 1]] });
+def(ID.COBBLE_STAIRS, { name: '丸石の階段', tiles: ['cobble'], color: '#787f7e', hard: 2, tool: TOOL.PICK, tier: 1, rot: true, stairs: true, full: false, opaque: false, absorb: 0,
+  boxes: [[0, 0, 0, 1, .5, 1], [0, .5, 0, 1, 1, .5]] });
+def(ID.WOOD_STAIRS, { name: '木の階段', tiles: ['planks'], color: '#bb965e', hard: 1, tool: TOOL.AXE, rot: true, stairs: true, full: false, opaque: false, absorb: 0,
+  boxes: [[0, 0, 0, 1, .5, 1], [0, .5, 0, 1, 1, .5]] });
+def(ID.FENCE, { name: '柵', tiles: ['planks'], color: '#bb965e', hard: 1, tool: TOOL.AXE, connect: 'fence', full: false, opaque: false, absorb: 0, tall: 1.5,
+  boxes: [[.375, 0, .375, .625, 1, .625]] });
+def(ID.GLASS_PANE, { name: '板ガラス', tiles: ['glass'], color: '#c3e7e6', hard: .4, connect: 'pane', full: false, opaque: false, absorb: 0, alpha: true,
+  boxes: [[.4375, 0, .4375, .5625, 1, .5625]] });
+def(ID.DOOR, { name: '木のドア', tiles: ['door_top', 'door_top', 'door_bottom'], color: '#9a6f3c', hard: 1, tool: TOOL.AXE, rot: true, door: true, interact: 'door',
+  full: false, opaque: false, absorb: 0, boxes: [[0, 0, 0, 1, 1, .1875]] });
+def(ID.BED, { name: 'ベッド', tiles: ['bed_top', 'bed_side', 'planks'], color: '#b03a34', hard: .4, rot: true, bed: true, interact: 'bed',
+  full: false, opaque: false, absorb: 0, boxes: [[0, 0, 0, 1, .5625, 1]] });
+def(ID.LADDER, { name: 'はしご', tiles: ['ladder'], color: '#a5813f', hard: .4, rot: true, climb: true, solid: false, full: false, opaque: false, absorb: 0,
+  boxes: [[0, 0, 0, 1, 1, .125]] });
 
 export const name = id => (isItem(id) ? items[id]?.name : blocks[id]?.name) || '???';
 export const color = id => (isItem(id) ? items[id]?.color : blocks[id]?.color) || '#888';

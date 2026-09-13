@@ -2,15 +2,16 @@
 // オリジナルのボクセル・サンドボックス。地形生成・光伝播・チャンク分割メッシュ・
 // 生き物・クラフト・昼夜まで、すべてこのリポジトリ内で完結している。
 import * as THREE from './three.module.js';
-import { ID, TOOL, blocks, items, isItem, name as blockName, color as blockColor } from './src/blocks.js';
-import { buildAtlas, iconURL, blockTextures } from './src/textures.js';
+import { ID, IT, TOOL, blocks, items, isItem, name as blockName, color as blockColor } from './src/blocks.js';
+import { buildAtlas, iconURL, blockTextures, tileTexture } from './src/textures.js';
 import * as W3 from './src/world.js';
-import { W, H, SEA, CH, CX, getBlock, setRaw, relight, relightAll, surface, isSolid, heightMap, biomeMap } from './src/world.js';
+import { W, H, SEA, CH, CX, getBlock, setRaw, getMeta, setMeta, relight, relightAll, surface, isSolid, heightMap, biomeMap } from './src/world.js';
 import { generate, setSeed, findSpawn, biomeName, biomeTint } from './src/worldgen.js';
-import { buildChunk } from './src/mesher.js';
+import { buildChunk, blockBoxes } from './src/mesher.js';
 import { voxelMaterial, makeSky } from './src/shaders.js';
 import { Mobs, Particles } from './src/entities.js';
-import { recipes, canCraft, consume } from './src/craft.js';
+import { Inventory, SLOTS, HOTBAR, maxStack, findRecipe, craftOnce, recipes, fuels, smelting } from './src/inventory.js';
+import { Drops } from './src/drops.js';
 import * as Snd from './src/audio.js';
 import * as Save from './src/save.js';
 
@@ -74,11 +75,45 @@ const outline = new THREE.LineSegments(
 outline.visible = false;
 scene.add(outline);
 
-// ひび割れ表示
-const crackMat = new THREE.MeshBasicMaterial({ color: '#000000', transparent: true, opacity: .0, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
-const crack = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), crackMat);
+// 破壊のひび（10段階）
+const crackMat = new THREE.MeshBasicMaterial({
+  transparent: true, opacity: .95, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -2, alphaTest: .02,
+});
+const crack = new THREE.Mesh(new THREE.BoxGeometry(1.004, 1.004, 1.004), crackMat);
 crack.visible = false;
+crack.renderOrder = 3;
 scene.add(crack);
+let crackStage = -1;
+function setCrackStage(n) {
+  if (n === crackStage) return;
+  crackStage = n;
+  crackMat.map = n >= 0 ? tileTexture('crack' + n) : null;
+  crackMat.needsUpdate = true;
+}
+
+// 三人称で見えるプレイヤーの姿
+const avatar = (() => {
+  const g = new THREE.Group();
+  const box = (w, h, d, color, x, y, z, parent) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
+    m.position.set(x, y, z); parent.add(m); return m;
+  };
+  const limb = (w, h, d, color, x, hipY, z) => {
+    const p = new THREE.Group(); p.position.set(x, hipY, z); g.add(p);
+    box(w, h, d, color, 0, -h / 2, 0, p); return p;
+  };
+  const body = box(.52, .72, .28, '#3c6aa8', 0, 1.1, 0, g);
+  const head = box(.46, .46, .46, '#c98f6a', 0, 1.68, 0, g);
+  box(.09, .09, .03, '#2a2622', .12, 1.72, .24, head);
+  box(.09, .09, .03, '#2a2622', -.12, 1.72, .24, head);
+  box(.48, .2, .48, '#4a3526', 0, 1.86, 0, head);
+  const arms = [limb(.18, .68, .22, '#c98f6a', .35, 1.44, 0), limb(.18, .68, .22, '#c98f6a', -.35, 1.44, 0)];
+  const legs = [limb(.2, .76, .24, '#2f4a78', .13, .76, 0), limb(.2, .76, .24, '#2f4a78', -.13, .76, 0)];
+  g.visible = false;
+  scene.add(g);
+  return Object.assign(g, { head, body, arms, legs });
+})();
 
 // 手に持っているもの。
 // 本編とは別のシーン・別の画角で最後に重ねて描くので、画面の端でも歪まない。
@@ -200,16 +235,27 @@ const player = {
   pos: new THREE.Vector3(W / 2, 40, W / 2),
   vel: new THREE.Vector3(),
   yaw: 0, pitch: 0,
-  onGround: false, inWater: false, sprint: false, sneak: false, fly: false,
+  onGround: false, inWater: false, sprint: false, sneak: false, fly: false, view: 0,
   health: 20, food: 20, air: 10, hurtCd: 0, regenT: 0, starveT: 0,
 };
 const HALF = .3, BODY = 1.8, EYE = 1.62, STEP = 1.02;
 
-function boxBlocked(x, y, z) {
+// ハーフブロックや階段の形に沿って当たり判定をする
+function boxBlocked(x, y, z, height = BODY) {
   for (let bx = Math.floor(x - HALF); bx <= Math.floor(x + HALF); bx++)
     for (let bz = Math.floor(z - HALF); bz <= Math.floor(z + HALF); bz++)
-      for (let by = Math.floor(y); by <= Math.floor(y + BODY - .02); by++)
-        if (isSolid(getBlock(bx, by, bz))) return true;
+      for (let by = Math.floor(y); by <= Math.floor(y + height - .02); by++) {
+        const id = getBlock(bx, by, bz);
+        if (!isSolid(id)) continue;
+        const b = blocks[id];
+        if (b.full !== false) return true;
+        const tall = b.tall || 1;
+        for (const box of blockBoxes(id, getMeta(bx, by, bz))) {
+          if (bx + box[3] > x - HALF && bx + box[0] < x + HALF &&
+              bz + box[5] > z - HALF && bz + box[2] < z + HALF &&
+              by + box[4] * tall > y && by + box[1] < y + height) return true;
+        }
+      }
   return false;
 }
 let stepped = false;
@@ -223,11 +269,14 @@ function moveAxis(axis, amount) {
     if (axis === 'x') p.x = clamp(p.x, HALF + .01, W - HALF - .01);
     if (axis === 'z') p.z = clamp(p.z, HALF + .01, W - HALF - .01);
     if (!boxBlocked(p.x, p.y, p.z)) {
+      // スニーク中は足場の縁で止まる
+      if (axis !== 'y' && player.sneak && player.onGround && !player.fly && !onLedge(p.x, p.z)) return;
       player.pos.copy(p);
       if (axis === 'y' && d < 0) player.onGround = false;
       continue;
     }
     if (axis === 'y') { if (d < 0) player.onGround = true; player.vel.y = 0; return; }
+
     // 1ブロックの段差は自動で上る（いちいち跳ばなくていい）。
     // 1フレームに1段までに制限しているので、壁をよじ登ることはない。
     if (!stepped && (player.onGround || player.inWater) && !player.fly &&
@@ -239,6 +288,15 @@ function moveAxis(axis, amount) {
     }
     return;
   }
+}
+
+// その位置に足場があるか（スニーク用）
+function onLedge(x, z) {
+  const y = player.pos.y;
+  for (let bx = Math.floor(x - HALF); bx <= Math.floor(x + HALF); bx++)
+    for (let bz = Math.floor(z - HALF); bz <= Math.floor(z + HALF); bz++)
+      if (isSolid(getBlock(bx, Math.floor(y - .08), bz))) return true;
+  return false;
 }
 
 // 地形の中に埋まってしまったら上へ押し出す（保存データの読み込み直後など）
@@ -319,9 +377,11 @@ const soundMat = id => {
 };
 
 // ブロックを書き換えて、光とメッシュを更新する
-function changeBlock(x, y, z, id) {
-  setRaw(x, y, z, id);
-  const r = relight(x, y, z);
+function changeBlock(x, y, z, id, meta = 0) {
+  const old = getBlock(x, y, z);
+  const radius = W3.autoRadius(x, y, z, old, id);
+  setRaw(x, y, z, id, meta);
+  const r = relight(x, y, z, radius);
   if (r) markDirty(r.x0, r.y0, r.z0, r.x1, r.y1, r.z1);
   markDirty(x, y, z, x, y, z);
   const ci = x + z * W;
@@ -331,8 +391,8 @@ function changeBlock(x, y, z, id) {
 }
 
 function currentTool() {
-  const id = hotbar[sel];
-  return isItem(id) && items[id]?.tool ? items[id] : null;
+  const st = bag.get(sel);
+  return st && isItem(st.id) && items[st.id]?.tool ? items[st.id] : null;
 }
 function breakSeconds(id) {
   const b = blocks[id];
@@ -350,95 +410,148 @@ function canHarvest(id) {
   return !!t && t.tool === b.tool && t.tier >= b.tier;
 }
 
-function give(id, n = 1) {
-  inv[id] = (inv[id] || 0) + n;
-  // 空きスロットがあれば自動でホットバーへ
-  if (!isItem(id) || items[id]?.tool) {
-    if (!hotbar.includes(id)) {
-      const empty = hotbar.indexOf(0);
-      if (empty >= 0) hotbar[empty] = id;
-    }
-  }
+// 持ち物に入れる。入りきらない分はその場に落とす。
+function give(id, n = 1, dur) {
+  const left = bag.add(id, n, dur);
+  if (left > 0 && playing) drops.spawn(id, left, player.pos.x, player.pos.y + 1, player.pos.z, .1);
   updateHotbar();
+  if (bagOpen) renderScreen();
+  return n - left;
 }
 
 function damageTool(n = 1) {
-  const t = currentTool();
-  if (!t || mode === 'creative') return;
-  const id = hotbar[sel];
-  dur[id] = (dur[id] ?? t.dur) - n;
-  if (dur[id] <= 0) {
-    delete dur[id];
-    inv[id] = Math.max(0, (inv[id] || 1) - 1);
-    if (!inv[id]) { hotbar[sel] = 0; setHeld(0); }
-    toast(t.name + ' が壊れてしまった');
+  const st = bag.get(sel);
+  if (!st || mode === 'creative') return;
+  const it = items[st.id];
+  if (!it?.tool) return;
+  st.dur = (st.dur ?? it.dur) - n;
+  if (st.dur <= 0) {
+    bag.set(sel, null);
+    toast(it.name + ' が壊れてしまった');
     Snd.breakBlock('wood');
   }
   updateHotbar();
 }
 
+// 壊したときに何がいくつ落ちるか
+function dropsOf(id, m) {
+  const b = blocks[id];
+  if (id === ID.LEAVES || id === ID.BIRCH_LEAVES || id === ID.PINE_LEAVES) {
+    return Math.random() < .06 ? [[ID.OAK_SAPLING ?? id, 1]] : (Math.random() < .04 ? [[IT.STICK, 1]] : []);
+  }
+  if (id === ID.GRAVEL && Math.random() < .12) return [[IT.FLINT, 1]];
+  if (id === ID.COAL_ORE) return [[IT.COAL, 1 + (Math.random() < .3 ? 1 : 0)]];
+  if (id === ID.DIAMOND_ORE) return [[IT.DIAMOND, 1]];
+  if (id === ID.IRON_ORE) return [[IT.RAW_IRON, 1]];
+  if (id === ID.DOOR) return (m & 4) ? [] : [[ID.DOOR, 1]];
+  if (id === ID.BED) return (m & 4) ? [] : [[ID.BED, 1]];
+  return [[b.drop ?? id, 1]];
+}
+
 function mineBlock(hit) {
   const { x, y, z, id } = hit;
   const b = blocks[id];
+  const m = getMeta(x, y, z);
   if (b.hard === Infinity) { toast('岩盤はどうやっても壊せない'); return; }
   if (mode === 'survival' && !canHarvest(id)) {
     const need = ['', '木', '石', '鉄', 'ダイヤ'][b.tier] || '強い';
-    toast(need + 'の' + (b.tool === TOOL.AXE ? '斧' : b.tool === TOOL.SHOVEL ? 'シャベル' : 'ツルハシ') + 'が必要だ（Eでクラフト）');
-    hint('E キーで持ち物を開き、棒と木材から道具を作ろう');
+    toast(need + 'の' + (b.tool === TOOL.AXE ? '斧' : b.tool === TOOL.SHOVEL ? 'シャベル' : 'ツルハシ') + 'が必要だ');
+    hint('E で持ち物を開き、木材と棒から道具を作ろう');
     return;
   }
+  // ドア・ベッドは相方も壊す
+  if (b.door) changeBlock(x, (m & 4) ? y - 1 : y + 1, z, ID.AIR);
+  if (b.bed) { const d = bedPartner(x, y, z, m); if (d) changeBlock(d[0], d[1], d[2], ID.AIR); }
+  if (b.interact === 'chest') spillContainer(chests, x, y, z);
+  if (b.interact === 'furnace') spillContainer(furnaces, x, y, z);
+
   changeBlock(x, y, z, ID.AIR);
   particles.burst(x, y, z, blockColor(id), 16);
   Snd.breakBlock(soundMat(id));
   if (mode === 'survival') {
-    const drop = b.drop ?? id;
-    give(drop, id === ID.COAL_ORE || id === ID.DIAMOND_ORE ? 1 + Math.floor(Math.random() * 2) : 1);
+    for (const [did, dn] of dropsOf(id, m)) if (did) drops.spawn(did, dn, x + .5, y + .4, z + .5);
     damageTool(1);
   }
-  // 浮いた草花・雪は落とす
   const above = getBlock(x, y + 1, z);
   if (blocks[above]?.plant || above === ID.SNOW) {
     changeBlock(x, y + 1, z, ID.AIR);
-    if (mode === 'survival') give(above, 1);
+    if (mode === 'survival') drops.spawn(above, 1, x + .5, y + 1.4, z + .5);
   }
+  queueFall(x, y + 1, z);
+  queueLeafCheck(x, y, z, id);
   stats.mined++;
   updateHotbar();
 }
 
+// 置く向き（プレイヤーの向きから決める）
+function facingFromYaw() {
+  const a = ((player.yaw % 6.2832) + 6.2832) % 6.2832;
+  if (a < .7854 || a >= 5.4978) return 0;   // -Z を向いている → 正面は +Z
+  if (a < 2.3562) return 3;
+  if (a < 3.927) return 2;
+  return 1;
+}
+const bedPartner = (x, y, z, m) => {
+  const dirs = [[0, 0, 1], [1, 0, 0], [0, 0, -1], [-1, 0, 0]];
+  const d = dirs[m & 3];
+  return (m & 4) ? [x - d[0], y, z - d[2]] : [x + d[0], y, z + d[2]];
+};
+
 function placeBlock(hit) {
-  const id = hotbar[sel];
-  if (!id) { toast('スロットが空。E で持ち物から選ぼう'); return; }
-  if (isItem(id)) { toast(blockName(id) + ' は置けない道具・素材'); return; }
-  const { px, py, pz } = hit;
+  const st = bag.get(sel);
+  if (!st) { toast('スロットが空。E で持ち物から選ぼう'); return; }
+  const id = st.id;
+  if (isItem(id)) { toast(blockName(id) + ' は置けない'); return; }
+  let { px, py, pz } = hit;
+  const b = blocks[id];
+
+  // ハーフブロックを同じ種類の上に置くと、まとまって1ブロックになる
   if (px < 0 || pz < 0 || px >= W || pz >= W || py < 0 || py >= H) { toast('この世界の外側には置けない'); return; }
   const there = getBlock(px, py, pz);
   if (there && there !== ID.WATER) { toast('そこにはもうブロックがある'); return; }
-  if (mode === 'survival' && !(inv[id] > 0)) { toast(blockName(id) + ' を持っていない'); return; }
-  const b = blocks[id];
   if (b.plant && !isSolid(getBlock(px, py - 1, pz))) { toast('地面の上にしか置けない'); return; }
-  if (b.solid) { // 自分と重なる場所には置けない
-    const p = player.pos;
-    if (px + 1 > p.x - HALF && px < p.x + HALF && pz + 1 > p.z - HALF && pz < p.z + HALF && py + 1 > p.y && py < p.y + BODY) {
-      toast('自分の足元すぎる。少し離れて置こう');
-      return;
-    }
+  if (b.door && (getBlock(px, py + 1, pz) || !isSolid(getBlock(px, py - 1, pz)))) { toast('ドアは地面の上、2マス分の空きが要る'); return; }
+
+  const facing = facingFromYaw();
+  let meta = b.rot ? facing : 0;
+  if (b.bed) {
+    const dirs = [[0, 0, 1], [1, 0, 0], [0, 0, -1], [-1, 0, 0]];
+    const d = dirs[facing];
+    if (getBlock(px + d[0], py, pz + d[2]) || !isSolid(getBlock(px + d[0], py - 1, pz + d[2]))) { toast('ベッドは2マス分の平らな場所が要る'); return; }
   }
-  changeBlock(px, py, pz, id);
+
+  if (b.solid && collidesPlayer(px, py, pz, id, meta)) { toast('自分と重なる。少し離れて置こう'); return; }
+
+  changeBlock(px, py, pz, id, meta);
+  if (b.door) changeBlock(px, py + 1, pz, ID.DOOR, meta | 4);
+  if (b.bed) { const d = [[0, 0, 1], [1, 0, 0], [0, 0, -1], [-1, 0, 0]][facing]; changeBlock(px + d[0], py, pz + d[2], ID.BED, meta | 4); }
   Snd.place(soundMat(id));
-  if (mode === 'survival') { inv[id]--; if (!inv[id]) { /* スロットは残す */ } }
+  if (mode !== 'creative') bag.consumeAt(sel);
   stats.placed++;
   updateHotbar();
   swing();
+  queueFall(px, py, pz);
+}
+
+// 置こうとしている形がプレイヤーと重なるか
+function collidesPlayer(bx, by, bz, id, meta) {
+  const p = player.pos;
+  for (const box of blockBoxes(id, meta)) {
+    if (bx + box[3] > p.x - HALF && bx + box[0] < p.x + HALF &&
+        bz + box[5] > p.z - HALF && bz + box[2] < p.z + HALF &&
+        by + box[4] > p.y && by + box[1] < p.y + BODY) return true;
+  }
+  return false;
 }
 
 function useItem() {
-  const id = hotbar[sel];
-  const it = items[id];
-  if (!it) return false;
-  if (it.food && player.food < 20 && mode === 'survival') {
+  const st = bag.get(sel);
+  if (!st) return false;
+  const it = items[st.id];
+  if (it?.food && player.food < 20 && mode === 'survival') {
     player.food = Math.min(20, player.food + it.food);
-    inv[id]--;
-    if (!inv[id]) hotbar[sel] = 0;
+    if (st.id === IT.MEAT_RAW && Math.random() < .3) { player.health = Math.max(1, player.health - 1); toast('生肉はおなかを壊しそうだ'); }
+    bag.consumeAt(sel);
     Snd.pickup();
     toast(it.name + ' を食べた');
     updateVitals(); updateHotbar();
@@ -454,10 +567,100 @@ function attack(mob) {
   swing();
   particles.burst(mob.g.position.x - .4, mob.g.position.y + .6, mob.g.position.z - .4, '#c0503f', 7, .7);
   const dead = mobs.damage(mob, dmg, player.pos, (drop, n) => {
-    if (mode === 'survival') { give(drop, n); toast(blockName(drop) + ' ×' + n + ' を手に入れた'); }
+    if (mode === 'survival') drops.spawn(drop, n, mob.g.position.x, mob.g.position.y + .5, mob.g.position.z);
   });
   if (dead) { Snd.mob(mob.type); stats.hunted++; }
   if (t) damageTool(1);
+}
+
+// クリーパーの爆発：まわりのブロックを吹き飛ばす
+function explode(x, y, z, radius) {
+  Snd.explode();
+  particles.burst(x - .5, y - .5, z - .5, '#3a3a3a', 40, 2.4);
+  particles.burst(x - .5, y - .5, z - .5, '#ffb45a', 18, 2.8);
+  const r = Math.ceil(radius);
+  const cx = Math.floor(x), cy = Math.floor(y), cz = Math.floor(z);
+  // まとめて消してから、光とメッシュは一度だけ作り直す（一瞬止まらないように）
+  let hitAny = false;
+  for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) for (let c = -r; c <= r; c++) {
+    const d = Math.hypot(a, b, c);
+    if (d > radius) continue;
+    const bx = cx + a, by = cy + b, bz = cz + c;
+    const id = getBlock(bx, by, bz);
+    if (!id || id === ID.WATER) continue;
+    const hard = blocks[id].hard;
+    if (hard === Infinity || hard > 4.5) continue;               // 岩盤や黒曜石は残る
+    if (Math.random() > 1 - d / radius * .55) continue;
+    setRaw(bx, by, bz, ID.AIR, 0);
+    hitAny = true;
+    if (mode === 'survival' && Math.random() < .28) for (const [did, dn] of dropsOf(id, 0)) if (did) drops.spawn(did, dn, bx + .5, by + .5, bz + .5);
+  }
+  if (hitAny) {
+    const pad = 8;
+    W3.relightRegion(cx - r - pad, cy - r - pad, cz - r - pad, cx + r + pad, cy + r + pad, cz + r + pad);
+    markDirty(cx - r - 1, cy - r - 1, cz - r - 1, cx + r + 1, cy + r + 1, cz + r + 1);
+    mapDirty = true;
+    for (let a = -r; a <= r; a++) for (let c = -r; c <= r; c++) {
+      const i = clamp(cx + a, 0, W - 1) + clamp(cz + c, 0, W - 1) * W;
+      heightMap[i] = surface(clamp(cx + a, 0, W - 1), clamp(cz + c, 0, W - 1));
+    }
+  }
+  const pd = Math.hypot(player.pos.x - x, player.pos.y + 1 - y, player.pos.z - z);
+  if (pd < radius + 2) {
+    damage(Math.round(11 * Math.max(.2, 1 - pd / (radius + 2))), 'クリーパーの爆発');
+    const k = Math.max(.4, 1 - pd / (radius + 2)) * 9;
+    player.vel.y = k * .8;
+    player.pos.x += (player.pos.x - x) / Math.max(.6, pd) * .6;
+    player.pos.z += (player.pos.z - z) / Math.max(.6, pd) * .6;
+  }
+}
+
+// --- 砂と砂利は落ちる / 葉は枯れる -----------------------------------------
+const fallQueue = [];
+const leafQueue = [];
+function queueFall(x, y, z) {
+  for (let i = 0; i < 6; i++) {
+    const id = getBlock(x, y + i, z);
+    if (!id) break;
+    if (id === ID.SAND || id === ID.GRAVEL) fallQueue.push([x, y + i, z]);
+  }
+}
+function queueLeafCheck(x, y, z, id) {
+  if (![ID.LOG, ID.BIRCH_LOG, ID.PINE_LOG].includes(id)) return;
+  for (let a = -4; a <= 4; a++) for (let b2 = -4; b2 <= 6; b2++) for (let c = -4; c <= 4; c++) {
+    const t = getBlock(x + a, y + b2, z + c);
+    if (t === ID.LEAVES || t === ID.BIRCH_LEAVES || t === ID.PINE_LEAVES) leafQueue.push([x + a, y + b2, z + c, 1.5 + Math.random() * 4]);
+  }
+}
+function updateBlockPhysics(dt) {
+  // 支えを失った砂・砂利
+  for (let i = 0; i < 8 && fallQueue.length; i++) {
+    const [x, y, z] = fallQueue.shift();
+    const id = getBlock(x, y, z);
+    if (id !== ID.SAND && id !== ID.GRAVEL) continue;
+    let ny = y;
+    while (ny > 1 && !getBlock(x, ny - 1, z)) ny--;
+    if (ny === y) continue;
+    changeBlock(x, y, z, ID.AIR);
+    changeBlock(x, ny, z, id);
+    particles.burst(x, ny, z, blockColor(id), 5, .4);
+    fallQueue.push([x, y + 1, z]);
+  }
+  // 幹を失った葉
+  for (let i = leafQueue.length - 1; i >= 0; i--) {
+    leafQueue[i][3] -= dt;
+    if (leafQueue[i][3] > 0) continue;
+    const [x, y, z] = leafQueue.splice(i, 1)[0];
+    const t = getBlock(x, y, z);
+    if (![ID.LEAVES, ID.BIRCH_LEAVES, ID.PINE_LEAVES].includes(t)) continue;
+    let near = false;
+    for (let a = -3; a <= 3 && !near; a++) for (let b2 = -3; b2 <= 3 && !near; b2++) for (let c = -3; c <= 3 && !near; c++)
+      if ([ID.LOG, ID.BIRCH_LOG, ID.PINE_LOG].includes(getBlock(x + a, y + b2, z + c))) near = true;
+    if (near) continue;
+    changeBlock(x, y, z, ID.AIR);
+    particles.burst(x, y, z, blockColor(t), 6, .5);
+    if (mode === 'survival' && Math.random() < .08) drops.spawn(IT.STICK, 1, x + .5, y + .5, z + .5);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,15 +672,16 @@ let seed = (Math.random() * 1e9) | 0;
 let time = 300;                       // 秒。DAY_LEN で1日
 const DAY_LEN = 720;
 let sel = 0;
-let inv = {};                          // id -> 個数
-let dur = {};                          // 道具id -> 残り耐久
-let hotbar = [ID.GRASS, ID.DIRT, ID.STONE, ID.COBBLE, ID.SAND, ID.PLANKS, ID.GLASS, ID.LANTERN, ID.TORCH];
+const bag = new Inventory();           // 36スロットの持ち物（0-8 がホットバー）
+const drops = new Drops(scene);        // 落ちているアイテム
+const chests = new Map();              // "x,y,z" -> 27スロット
+const furnaces = new Map();            // "x,y,z" -> かまどの状態
 let stats = { mined: 0, placed: 0, hunted: 0 };
 let mapDirty = true;
 const keys = {};
 
 const CREATIVE_BAR = [ID.GRASS, ID.DIRT, ID.STONE, ID.COBBLE, ID.SAND, ID.PLANKS, ID.GLASS, ID.LANTERN, ID.TORCH];
-const SURVIVAL_BAR = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -503,33 +707,343 @@ function hint(msg, once = true) {
   hintT = setTimeout(() => el.classList.remove('show'), 5200);
 }
 
+function stackHTML(st, showCount = true) {
+  if (!st) return '';
+  const it = items[st.id];
+  const dur = it?.dur && st.dur !== undefined && st.dur < it.dur
+    ? `<span class="dur"><i style="width:${Math.max(0, st.dur / it.dur * 100)}%"></i></span>` : '';
+  const n = showCount && st.n > 1 ? `<span class="n">${st.n}</span>` : '';
+  return `<img src="${iconURL(st.id)}" alt="">${n}${dur}`;
+}
+
 function updateHotbar() {
   const el = $('hotbar');
-  el.innerHTML = hotbar.map((id, i) => {
-    if (!id) return `<button class="slot empty ${i === sel ? 'active' : ''}" data-slot="${i}"><b>${i + 1}</b></button>`;
-    const t = items[id];
-    const count = mode === 'creative' && !isItem(id) ? '∞' : (inv[id] || 0);
-    const d = t?.tool && dur[id] !== undefined ? `<span class="dur"><i style="width:${Math.max(0, dur[id] / t.dur * 100)}%"></i></span>` : '';
-    return `<button class="slot ${i === sel ? 'active' : ''}" data-slot="${i}" title="${blockName(id)}">
-      <b>${i + 1}</b><img src="${iconURL(id)}" alt=""><small>${count}</small>${d}</button>`;
-  }).join('');
-  $('selectedName').textContent = hotbar[sel] ? blockName(hotbar[sel]) : '（空のスロット）';
-  setHeld(hotbar[sel]);
+  let html = '';
+  for (let i = 0; i < HOTBAR; i++) {
+    const st = bag.get(i);
+    html += `<button class="slot ${i === sel ? 'active' : ''} ${st ? '' : 'empty'}" data-slot="${i}" title="${st ? blockName(st.id) : ''}">
+      <b>${i + 1}</b>${stackHTML(st)}</button>`;
+  }
+  el.innerHTML = html;
+  const st = bag.get(sel);
+  $('selectedName').textContent = st ? blockName(st.id) : '';
+  setHeld(st ? st.id : 0);
 }
 
+// 本家と同じく、ハートと肉のアイコンで表示する
+function iconRow(el, n, full, half, empty, max = 10) {
+  let html = '';
+  for (let i = 0; i < max; i++) {
+    const v = n / 2 - i;
+    html += `<i class="${v >= 1 ? 'f' : v >= .5 ? 'h' : 'e'}">${v >= 1 ? full : v >= .5 ? half : empty}</i>`;
+  }
+  el.innerHTML = html;
+}
 function updateVitals() {
   const surv = mode === 'survival';
-  $('healthBar').style.setProperty('--v', (player.health / 20 * 100) + '%');
-  $('foodBar').style.setProperty('--v', (player.food / 20 * 100) + '%');
-  $('airBar').style.setProperty('--v', (player.air / 10 * 100) + '%');
-  $('healthBar').classList.toggle('hidden', !surv);
-  $('foodBar').classList.toggle('hidden', !surv);
-  $('airBar').classList.toggle('hidden', !surv || player.air >= 10);
+  $('vitals').classList.toggle('hidden', !surv);
+  if (!surv) return;
+  iconRow($('hearts'), player.health, '♥', '♥', '♡');
+  iconRow($('food'), player.food, '🍖', '🍖', '·');
+  const airEl = $('air');
+  airEl.classList.toggle('hidden', player.air >= 10);
+  iconRow(airEl, player.air * 2, '●', '●', '·');
 }
 
 // ---------------------------------------------------------------------------
-// 持ち物とクラフト
+// 持ち物・クラフト・チェスト・かまど
+// 本家と同じ操作感：左クリックで丸ごと掴む／置く、右クリックで半分・1個ずつ。
 // ---------------------------------------------------------------------------
+let screen = 'inventory';          // inventory | bench | chest | furnace
+let screenPos = null;              // 開いている設備の座標
+let craftGrid = new Array(9).fill(null);
+let cursor = null;                 // マウスが掴んでいる山
+
+const containerKey = (x, y, z) => x + ',' + y + ',' + z;
+function chestAt(x, y, z) {
+  const k = containerKey(x, y, z);
+  if (!chests.has(k)) chests.set(k, new Array(27).fill(null));
+  return chests.get(k);
+}
+function furnaceAt(x, y, z) {
+  const k = containerKey(x, y, z);
+  if (!furnaces.has(k)) furnaces.set(k, { slots: new Array(3).fill(null), fuel: 0, fuelMax: 0, cook: 0, x, y, z });
+  return furnaces.get(k);
+}
+function spillContainer(map, x, y, z) {
+  const k = containerKey(x, y, z);
+  const c = map.get(k);
+  if (!c) return;
+  const list = Array.isArray(c) ? c : c.slots;
+  for (const st of list) if (st) drops.spawn(st.id, st.n, x + .5, y + .6, z + .5, .4, st.dur);
+  map.delete(k);
+}
+
+const craftSize = () => (screen === 'bench' ? 3 : 2);
+function gridCells() {
+  const n = craftSize();
+  const out = [];
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) out.push(craftGrid[r * 3 + c]);
+  return out;
+}
+function currentResult() {
+  const n = craftSize();
+  const cells = gridCells();
+  const r = findRecipe(cells, n);
+  return r ? { r, stack: { id: r.out[0], n: r.out[1] } } : null;
+}
+
+function cellHTML(cont, i, st, extra = '') {
+  return `<button class="cell ${extra}" data-cont="${cont}" data-i="${i}" title="${st ? blockName(st.id) : ''}">${stackHTML(st)}</button>`;
+}
+function gridHTML(cont, list, from = 0, to = list.length, sel2 = -1) {
+  let h = '';
+  for (let i = from; i < to; i++) h += cellHTML(cont, i, list[i], i === sel2 ? 'sel' : '');
+  return h;
+}
+
+function renderScreen() {
+  const creative = mode === 'creative';
+  $('screenKind').textContent = { inventory: 'INVENTORY', bench: 'CRAFTING TABLE', chest: 'CHEST', furnace: 'FURNACE' }[screen];
+  $('screenTitle').textContent = { inventory: '持ち物', bench: '作業台', chest: 'チェスト', furnace: 'かまど' }[screen];
+
+  // 上段：クラフト格子 / チェスト / かまど
+  const top = $('screenTop');
+  if (screen === 'chest') {
+    const c = chestAt(...screenPos);
+    top.innerHTML = `<div class="panelbox"><div class="rowhead"><span>チェストの中身</span><small>27マス</small></div>
+      <div class="grid">${gridHTML('chest', c)}</div></div>`;
+  } else if (screen === 'furnace') {
+    const f = furnaceAt(...screenPos);
+    const prog = f.cook > 0 ? Math.min(1, f.cook / COOK_TIME) : 0;
+    top.innerHTML = `<div class="panelbox"><div class="rowhead"><span>かまど</span><small>燃料を入れて、焼きたいものを上へ</small></div>
+      <div class="crafting">
+        <div class="fuelcol">${cellHTML('furnace', 0, f.slots[0])}<span class="flame ${f.fuel > 0 ? 'on' : ''}"></span>${cellHTML('furnace', 1, f.slots[1])}</div>
+        <div class="resultwrap"><div class="progbar"><i style="width:${(prog * 100).toFixed(0)}%"></i></div><span>焼き上がり</span></div>
+        <div class="resultwrap">${cellHTML('furnace', 2, f.slots[2])}<span>取り出す</span></div>
+      </div></div>`;
+  } else {
+    const n = craftSize();
+    const res = currentResult();
+    let cells = '';
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) cells += cellHTML('craft', r * 3 + c, craftGrid[r * 3 + c]);
+    top.innerHTML = `<div class="panelbox"><div class="rowhead"><span>クラフト</span><small>${n === 3 ? '3×3（作業台）' : '2×2（作業台を置くと3×3）'}</small></div>
+      <div class="crafting">
+        <div class="craftgrid g${n}">${cells}</div>
+        <div class="craftarrow">➜</div>
+        <div class="resultwrap">${cellHTML('result', 0, res ? res.stack : null)}<span>できるもの</span></div>
+      </div></div>`;
+  }
+
+  // クリエイティブの全ブロック一覧
+  const cbox = $('creativeBox');
+  cbox.classList.toggle('hidden', !creative);
+  if (creative) {
+    const list = blocks.filter(b => b && b.id !== ID.AIR && b.id !== ID.BEDROCK && b.id !== ID.FURNACE_LIT).map(b => b.id)
+      .concat(Object.keys(items).map(Number));
+    $('creativeGrid').innerHTML = list.map(id => `<button class="cell" data-cont="creative" data-i="${id}" title="${blockName(id)}"><img src="${iconURL(id)}" alt=""></button>`).join('');
+  }
+
+  $('invGrid').innerHTML = gridHTML('inv', bag.slots, HOTBAR, SLOTS);
+  $('hotGrid').innerHTML = gridHTML('inv', bag.slots, 0, HOTBAR, sel);
+
+  // レシピ帳
+  const book = recipes.filter(r => !r.pattern || r.pattern.length <= craftSize());
+  $('recipes').innerHTML = book.map((r, i) => {
+    const idx = recipes.indexOf(r);
+    return `<button data-recipe="${idx}" title="材料を格子に並べます">
+      <img src="${iconURL(r.out[0])}" alt="">
+      <span class="body"><b>${blockName(r.out[0])}${r.out[1] > 1 ? ' ×' + r.out[1] : ''}</b><small>${recipeText(r)}</small></span></button>`;
+  }).join('');
+  drawCursor();
+}
+
+function recipeText(r) {
+  const names = new Map();
+  const add = k => {
+    const id = Array.isArray(k) ? k[0] : k;
+    names.set(id, (names.get(id) || 0) + 1);
+  };
+  if (r.pattern) r.pattern.forEach(row => [...row].forEach(ch => { if (ch !== ' ') add(r.key[ch]); }));
+  else r.shapeless.forEach(add);
+  return [...names].map(([id, n]) => blockName(id) + (n > 1 ? '×' + n : '')).join(' ＋ ');
+}
+
+// レシピ帳から材料を格子へ並べる
+function layoutRecipe(ri) {
+  const r = recipes[ri];
+  const n = craftSize();
+  if (r.pattern && r.pattern.length > n) { toast('作業台が必要なレシピ'); return; }
+  returnGrid();
+  const need = [];
+  const place = (row, col, key) => {
+    const id = Array.isArray(key) ? key.find(k => bag.count(k) > 0) ?? key[0] : key;
+    need.push([row, col, id]);
+  };
+  if (r.pattern) r.pattern.forEach((row, y) => [...row].forEach((ch, x) => { if (ch !== ' ') place(y, x, r.key[ch]); }));
+  else r.shapeless.forEach((k, i) => place(Math.floor(i / n), i % n, k));
+  let missing = null;
+  for (const [row, col, id] of need) {
+    if (mode !== 'creative' && !bag.remove(id, 1)) { missing = id; break; }
+    craftGrid[row * 3 + col] = { id, n: 1 };
+  }
+  if (missing) { toast(blockName(missing) + ' が足りない'); returnGrid(); }
+  updateHotbar();
+  renderScreen();
+}
+
+// 格子の中身を持ち物へ戻す
+function returnGrid() {
+  for (let i = 0; i < 9; i++) {
+    const st = craftGrid[i];
+    if (!st) continue;
+    craftGrid[i] = null;
+    if (mode !== 'creative') give(st.id, st.n, st.dur);
+  }
+}
+
+function takeResult(all) {
+  const res = currentResult();
+  if (!res) return;
+  let loops = all ? 64 : 1;
+  let made = 0;
+  while (loops-- > 0) {
+    const r = currentResult();
+    if (!r) break;
+    const st = r.stack;
+    if (cursor && (cursor.id !== st.id || cursor.n + st.n > maxStack(st.id))) break;
+    if (cursor) cursor.n += st.n; else cursor = { id: st.id, n: st.n, dur: items[st.id]?.dur };
+    craftOnce(craftGrid);
+    made++;
+  }
+  if (made) { Snd.craft(); stats.crafted = (stats.crafted || 0) + made; }
+  renderScreen();
+}
+
+// --- スロット操作 -----------------------------------------------------------
+function listFor(cont) {
+  if (cont === 'inv') return bag.slots;
+  if (cont === 'craft') return craftGrid;
+  if (cont === 'chest') return chestAt(...screenPos);
+  if (cont === 'furnace') return furnaceAt(...screenPos).slots;
+  return null;
+}
+
+// Shift+クリック：持ち物 ⇄ チェスト／かまど をまとめて移す
+function quickMove(cont, i) {
+  const list = listFor(cont);
+  if (!list) return;
+  const st = list[i];
+  if (!st) return;
+  const target = cont === 'inv'
+    ? (screen === 'chest' ? chestAt(...screenPos) : screen === 'furnace' ? furnaceAt(...screenPos).slots : null)
+    : bag.slots;
+  if (!target) {                                   // 行き先が無ければホットバー ⇄ 持ち物
+    const from = i < HOTBAR ? [HOTBAR, SLOTS] : [0, HOTBAR];
+    moveInto(bag.slots, i, bag.slots, from[0], from[1]);
+  } else if (cont === 'inv') {
+    moveInto(bag.slots, i, target, 0, screen === 'furnace' ? 2 : target.length);
+  } else {
+    moveInto(list, i, bag.slots, 0, SLOTS);
+  }
+  updateHotbar();
+  renderScreen();
+}
+function moveInto(src, i, dst, from, to) {
+  const st = src[i];
+  if (!st) return;
+  const max = maxStack(st.id);
+  for (let k = from; k < to && st.n > 0; k++) {     // まず同じ種類に足す
+    const d = dst[k];
+    if (!d || d.id !== st.id || d.n >= max) continue;
+    const put = Math.min(max - d.n, st.n);
+    d.n += put; st.n -= put;
+  }
+  for (let k = from; k < to && st.n > 0; k++) {     // 次に空きへ
+    if (dst[k]) continue;
+    dst[k] = { id: st.id, n: st.n, dur: st.dur };
+    st.n = 0;
+  }
+  if (st.n <= 0) src[i] = null;
+}
+
+// 数字キーでホットバーの枠と入れ替える
+function swapToHotbar(cont, i, slot) {
+  const list = listFor(cont);
+  if (!list) return;
+  const a = list[i], b = bag.slots[slot];
+  list[i] = b; bag.slots[slot] = a;
+  updateHotbar();
+  renderScreen();
+}
+
+function clickSlot(cont, i, right) {
+  if (cont === 'creative') {                       // クリエイティブの一覧から取り出す
+    const id = i;
+    cursor = { id, n: right ? 1 : maxStack(id), dur: items[id]?.dur };
+    drawCursor();
+    return;
+  }
+  if (cont === 'result') { takeResult(right); return; }
+  const list = listFor(cont);
+  if (!list) return;
+  if (cont === 'furnace' && i === 2 && cursor) return;   // 焼き上がりには入れられない
+
+  const st = list[i];
+  if (cursor) {
+    if (!st) {                                     // 空きへ置く
+      if (right) { list[i] = { id: cursor.id, n: 1, dur: cursor.dur }; cursor.n--; if (cursor.n <= 0) cursor = null; }
+      else { list[i] = cursor; cursor = null; }
+    } else if (st.id === cursor.id && maxStack(st.id) > 1) {
+      const room = maxStack(st.id) - st.n;
+      const put = right ? Math.min(1, room, cursor.n) : Math.min(room, cursor.n);
+      st.n += put; cursor.n -= put;
+      if (cursor.n <= 0) cursor = null;
+    } else if (!right) {                           // 入れ替え
+      list[i] = cursor; cursor = st;
+    }
+  } else if (st) {
+    if (right) {                                   // 半分だけ取る
+      const half = Math.ceil(st.n / 2);
+      cursor = { id: st.id, n: half, dur: st.dur };
+      st.n -= half;
+      if (st.n <= 0) list[i] = null;
+    } else { cursor = st; list[i] = null; }
+  }
+  if (cont === 'inv') updateHotbar();
+  renderScreen();
+}
+
+function drawCursor() {
+  const el = $('cursorStack');
+  if (!cursor) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = stackHTML(cursor);
+}
+
+function openScreen(kind, pos) {
+  screen = kind;
+  screenPos = pos || null;
+  bagOpen = true;
+  playing = false;
+  mining = false;
+  document.exitPointerLock?.();
+  $('inventory').classList.remove('hidden');
+  $('recipeBook').classList.toggle('hidden', kind === 'chest' || kind === 'furnace');
+  renderScreen();
+}
+const openBag = () => openScreen(nearBench() ? 'bench' : 'inventory');
+
+function closeOverlays() {
+  if (bagOpen) {
+    returnGrid();
+    if (cursor) { give(cursor.id, cursor.n, cursor.dur); cursor = null; drawCursor(); }
+  }
+  $('inventory').classList.add('hidden');
+  $('settings').classList.add('hidden');
+  bagOpen = false;
+}
+
 function nearBench() {
   const p = player.pos;
   for (let x = -4; x <= 4; x++) for (let y = -3; y <= 3; y++) for (let z = -4; z <= 4; z++)
@@ -537,55 +1051,68 @@ function nearBench() {
   return false;
 }
 
-function renderBag() {
-  const creative = mode === 'creative';
-  const list = creative
-    ? blocks.filter(b => b && b.id !== ID.AIR && b.id !== ID.BEDROCK).map(b => b.id)
-    : [...new Set([...Object.keys(inv).map(Number).filter(id => inv[id] > 0)])];
-  $('invHint').textContent = creative ? 'クリックでスロットにセット（無限）' : '持っているものだけ表示';
-  $('blocks').innerHTML = list.length ? list.map(id => `
-    <button data-give="${id}" class="${creative || inv[id] ? '' : 'zero'}" title="${blockName(id)}">
-      <img src="${iconURL(id)}" alt=""><span>${blockName(id)}</span>
-      <span class="n">${creative && !isItem(id) ? '∞' : (inv[id] || 0)}</span>
-    </button>`).join('') : '<p style="color:var(--dim);font-size:12px">まだ何も持っていない。木を殴るところから。</p>';
-
-  const bench = nearBench();
-  $('benchState').textContent = creative ? 'クリエイティブでは材料不要' : (bench ? '作業台のそば ✓' : '道具には作業台が必要');
-  $('recipes').innerHTML = recipes.map((r, i) => {
-    const ok = creative || (canCraft(r, inv) && (!r.bench || bench));
-    const needTxt = r.need.map(([id, n]) => `${blockName(id)}${n > 1 ? '×' + n : ''}`).join(' ＋ ') + (r.bench ? '（作業台）' : '');
-    return `<button data-recipe="${i}" ${ok ? '' : 'disabled'}>
-      <img src="${iconURL(r.out[0])}" alt="">
-      <span class="body"><b>${blockName(r.out[0])}${r.out[1] > 1 ? ' ×' + r.out[1] : ''}</b><small>${needTxt}</small></span>
-      <span class="tag">${r.tag}</span></button>`;
-  }).join('');
-}
-
-function doCraft(i) {
-  const r = recipes[i];
-  if (mode === 'survival') {
-    if (!canCraft(r, inv)) { toast('材料が足りない'); return; }
-    if (r.bench && !nearBench()) { toast('作業台のそばでしか作れない'); return; }
-    consume(r, inv);
+// --- かまど -----------------------------------------------------------------
+const COOK_TIME = 8;
+function updateFurnaces(dt) {
+  for (const f of furnaces.values()) {
+    const input = f.slots[0], fuel = f.slots[1];
+    const out = smelting[input?.id];
+    const canCook = out !== undefined && (!f.slots[2] || (f.slots[2].id === out && f.slots[2].n < maxStack(out)));
+    if (f.fuel > 0) f.fuel -= dt;
+    if (f.fuel <= 0 && canCook && fuel && fuels[fuel.id]) {   // 新しい燃料に火をつける
+      f.fuelMax = f.fuel = fuels[fuel.id] * COOK_TIME;
+      fuel.n--;
+      if (fuel.n <= 0) f.slots[1] = null;
+    }
+    const lit = f.fuel > 0;
+    const id = getBlock(f.x, f.y, f.z);
+    if (lit && id === ID.FURNACE) changeBlock(f.x, f.y, f.z, ID.FURNACE_LIT, getMeta(f.x, f.y, f.z));
+    if (!lit && id === ID.FURNACE_LIT) changeBlock(f.x, f.y, f.z, ID.FURNACE, getMeta(f.x, f.y, f.z));
+    if (lit && canCook) {
+      f.cook += dt;
+      if (f.cook >= COOK_TIME) {
+        f.cook = 0;
+        input.n--;
+        if (input.n <= 0) f.slots[0] = null;
+        if (f.slots[2]) f.slots[2].n++;
+        else f.slots[2] = { id: out, n: 1 };
+        Snd.ui(true);
+      }
+    } else f.cook = Math.max(0, f.cook - dt * 2);
   }
-  give(r.out[0], r.out[1]);
-  if (items[r.out[0]]?.tool) dur[r.out[0]] = items[r.out[0]].dur;
-  Snd.craft();
-  toast(blockName(r.out[0]) + ' を作った');
-  renderBag();
-  updateHotbar();
+  if (bagOpen && screen === 'furnace') renderScreen();
 }
 
-function openBag() {
-  bagOpen = true; playing = false; mining = false;
-  document.exitPointerLock?.();
-  renderBag();
-  $('inventory').classList.remove('hidden');
-}
-function closeOverlays() {
-  $('inventory').classList.add('hidden');
-  $('settings').classList.add('hidden');
-  bagOpen = false;
+// --- 右クリックでの「使う」---------------------------------------------------
+function interact(hit) {
+  const id = getBlock(hit.x, hit.y, hit.z);
+  const b = blocks[id];
+  if (!b?.interact) return false;
+  const m = getMeta(hit.x, hit.y, hit.z);
+  switch (b.interact) {
+    case 'door': {
+      const bottomY = (m & 4) ? hit.y - 1 : hit.y;
+      const bm = getMeta(hit.x, bottomY, hit.z);
+      const open = (bm & 8) ? 0 : 8;
+      setMeta(hit.x, bottomY, hit.z, (bm & 7) | open);
+      setMeta(hit.x, bottomY + 1, hit.z, (getMeta(hit.x, bottomY + 1, hit.z) & 7) | 4 | open);
+      markDirty(hit.x, bottomY, hit.z, hit.x, bottomY + 1, hit.z);
+      Snd.place('wood');
+      return true;
+    }
+    case 'chest': openScreen('chest', [hit.x, hit.y, hit.z]); Snd.ui(); return true;
+    case 'furnace': openScreen('furnace', [hit.x, hit.y, hit.z]); Snd.ui(); return true;
+    case 'bed': {
+      if (!isNight()) { toast('夜になったら眠れる'); return true; }
+      time = Math.ceil(time / DAY_LEN) * DAY_LEN + DAY_LEN * .27;
+      player.health = Math.min(20, player.health + 4);
+      for (const mo of [...mobs.list]) if (mo.def.hostile) mobs.damage(mo, 999, null, () => {});
+      toast('ぐっすり眠った。朝になった');
+      updateVitals();
+      return true;
+    }
+    default: return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +1161,60 @@ function drawMinimap() {
 }
 
 // ---------------------------------------------------------------------------
+// 天気（雨と雪）
+// ---------------------------------------------------------------------------
+let weather = 0;          // 0=晴れ 1=雨
+let weatherT = 260 + Math.random() * 500;
+let rainLevel = 0;
+const RAIN_N = 1400;
+const rainGeo = new THREE.BufferGeometry();
+{
+  const pos = new Float32Array(RAIN_N * 3);
+  for (let i = 0; i < RAIN_N; i++) {
+    pos[i * 3] = (Math.random() - .5) * 26;
+    pos[i * 3 + 1] = Math.random() * 20;
+    pos[i * 3 + 2] = (Math.random() - .5) * 26;
+  }
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+}
+const rainMat = new THREE.PointsMaterial({ color: '#cfe6f2', size: .17, transparent: true, opacity: .0, depthWrite: false, sizeAttenuation: true });
+const rainField = new THREE.Points(rainGeo, rainMat);
+rainField.frustumCulled = false;
+scene.add(rainField);
+
+function updateWeather(dt) {
+  weatherT -= dt;
+  if (weatherT <= 0) {
+    weather = weather ? 0 : 1;
+    weatherT = weather ? 90 + Math.random() * 260 : 300 + Math.random() * 700;
+    if (playing) toast(weather ? '雨が降ってきた' : '雨が上がった');
+  }
+  rainLevel += ((weather ? 1 : 0) - rainLevel) * Math.min(1, dt * .6);
+  rainMat.opacity = rainLevel * .8;
+  rainField.visible = rainLevel > .02;
+  Snd.rain(playing ? rainLevel : 0);
+  if (!rainField.visible) return;
+
+  const cold = biomeMap[clamp(player.pos.x | 0, 0, W - 1) + clamp(player.pos.z | 0, 0, W - 1) * W];
+  const snowy = cold === 4 || cold === 3;             // 雪原と山岳は雪
+  rainMat.color.set(snowy ? '#ffffff' : '#cfe6f2');
+  rainMat.size = snowy ? .2 : .17;
+  const p = rainGeo.attributes.position.array;
+  const fall = snowy ? 4 : 26;
+  for (let i = 0; i < RAIN_N; i++) {
+    p[i * 3 + 1] -= fall * dt * (snowy ? (.6 + (i % 7) * .1) : 1);
+    if (snowy) p[i * 3] += Math.sin(performance.now() * .001 + i) * dt * .6;
+    if (p[i * 3 + 1] < -6) {
+      p[i * 3] = (Math.random() - .5) * 26;
+      p[i * 3 + 1] = 14 + Math.random() * 7;
+      p[i * 3 + 2] = (Math.random() - .5) * 26;
+    }
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+  rainField.position.set(Math.round(player.pos.x), Math.round(player.pos.y), Math.round(player.pos.z));
+}
+
+// ---------------------------------------------------------------------------
 // 昼夜
 // ---------------------------------------------------------------------------
 const skyPalettes = [
@@ -660,7 +1241,7 @@ function updateSky() {
   cAmb.set(a.amb).lerp(new THREE.Color(b.amb), k);
   cTorch.set(a.torch).lerp(new THREE.Color(b.torch), k);
   cFog.set(a.fog).lerp(new THREE.Color(b.fog), k);
-  dayLight = lerp(a.light, b.light, k);
+  dayLight = lerp(a.light, b.light, k) * (1 - rainLevel * .45);
 
   const ang = (f - .25) * Math.PI * 2;
   const sunDir = new THREE.Vector3(Math.cos(ang) * .8, Math.sin(ang), .35).normalize();
@@ -669,14 +1250,21 @@ function updateSky() {
   sky.material.uniforms.uBottom.value.copy(cBot);
   sky.material.uniforms.uSunColor.value.copy(cSun);
   sky.material.uniforms.uSunDir.value.copy(sunDir.y > -.2 ? sunDir : sunDir.clone().negate());
-  sky.material.uniforms.uStars.value = clamp((.34 - dayLight) * 4.5, 0, 1);
+  sky.material.uniforms.uStars.value = clamp((.34 - dayLight) * 4.5, 0, 1) * (1 - rainLevel);
+  if (rainLevel > .01) {
+    const grey = new THREE.Color('#5a6a72');
+    sky.material.uniforms.uTop.value.lerp(grey, rainLevel * .8);
+    sky.material.uniforms.uMid.value.lerp(grey, rainLevel * .8);
+    sky.material.uniforms.uBottom.value.lerp(grey, rainLevel * .7);
+    cFog.lerp(grey, rainLevel * .75);
+  }
 
   const under = blockAtEye() === ID.WATER;
   document.body.classList.toggle('underwater', under && playing);
   const far = settings.dist * CH;
   scene.fog.color.copy(under ? new THREE.Color('#1d5d75') : cFog);
-  scene.fog.near = under ? 0.5 : far * .72;
-  scene.fog.far = under ? 16 : far * 1.12;
+  scene.fog.near = under ? 0.5 : far * (.72 - rainLevel * .28);
+  scene.fog.far = under ? 16 : far * (1.12 - rainLevel * .38);
   sky.visible = !under;
   renderer.setClearColor(scene.fog.color, 1);
 
@@ -702,7 +1290,7 @@ let hit = null, mining = false, progress = 0, miningKey = '', swingT = 0, digSou
 function swing() { swingT = .28; }
 
 function updateMining(dt) {
-  if (!mining || !hit) { progress = 0; $('progress').classList.add('hidden'); crack.visible = false; return; }
+  if (!mining || !hit) { progress = 0; $('progress').classList.add('hidden'); crack.visible = false; setCrackStage(-1); return; }
   const k = hit.x + ',' + hit.y + ',' + hit.z;
   if (k !== miningKey) { miningKey = k; progress = 0; }
   const total = breakSeconds(hit.id);
@@ -719,9 +1307,9 @@ function updateMining(dt) {
   }
   $('progress').classList.remove('hidden');
   $('progressArc').style.strokeDashoffset = String(100.5 * (1 - progress));
-  crack.visible = progress > .12;
+  crack.visible = progress > .04;
   crack.position.set(hit.x + .5, hit.y + .5, hit.z + .5);
-  crackMat.opacity = progress * .55;
+  setCrackStage(Math.min(9, Math.floor(progress * 10)));
 }
 
 // ---------------------------------------------------------------------------
@@ -733,7 +1321,8 @@ function updatePlayer(dt) {
   unstick();
   const feet = blockAtFeet(), eye = blockAtEye();
   player.inWater = feet === ID.WATER || eye === ID.WATER;
-  player.sprint = !!keys.ShiftLeft && !player.fly && (keys.KeyW || touchMove.y < -.3) && !player.inWater;
+  player.sneak = !!keys.ShiftLeft && player.onGround && !player.fly;
+  player.sprint = (!!keys.ControlLeft || !!keys.ShiftRight) && !player.sneak && !player.fly && (keys.KeyW || touchMove.y < -.3) && !player.inWater;
 
   let mx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + touchMove.x;
   let mz = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0) + touchMove.y;
@@ -741,7 +1330,7 @@ function updatePlayer(dt) {
   if (len > 1) { mx /= len; mz /= len; }
   const moving = len > .08;
 
-  let speed = player.fly ? 13 : player.inWater ? 3.4 : player.sprint ? 7.1 : 4.6;
+  let speed = player.fly ? 13 : player.inWater ? 3.4 : player.sprint ? 7.1 : player.sneak ? 1.8 : 4.6;
   if (mode === 'survival' && player.food <= 2) speed *= .62;
   const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
   const vx = (mx * cos + mz * sin) * speed;
@@ -802,10 +1391,34 @@ function updatePlayer(dt) {
     player.hurtCd = Math.max(0, player.hurtCd - dt);
   }
 
-  // カメラ
+  // カメラ（F5 で一人称・背後・正面）
   const bob = settings.bob && player.onGround && moving ? Math.sin(bobT) * .035 : 0;
-  camera.position.set(player.pos.x, player.pos.y + EYE + bob, player.pos.z);
+  const eyeY = player.pos.y + (player.sneak ? EYE - .22 : EYE) + bob;
   camera.rotation.set(player.pitch, player.yaw, settings.bob ? Math.cos(bobT) * .008 : 0);
+  if (player.view === 0) {
+    camera.position.set(player.pos.x, eyeY, player.pos.z);
+  } else {
+    const back = player.view === 1 ? 1 : -1;
+    camera.getWorldDirection(dir);
+    let d = 3.6;
+    for (let t = .3; t <= 3.6; t += .2) {                       // 壁にめり込まない距離を探す
+      const px = player.pos.x - dir.x * t * back, py = eyeY - dir.y * t * back, pz = player.pos.z - dir.z * t * back;
+      if (isSolid(getBlock(Math.floor(px), Math.floor(py), Math.floor(pz)))) { d = Math.max(.6, t - .3); break; }
+      d = t;
+    }
+    camera.position.set(player.pos.x - dir.x * d * back, eyeY - dir.y * d * back + .15, player.pos.z - dir.z * d * back);
+    if (back < 0) camera.rotation.set(-player.pitch, player.yaw + Math.PI, 0);
+  }
+  avatar.visible = player.view !== 0;
+  if (avatar.visible) {
+    avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
+    avatar.rotation.y = -player.yaw + Math.PI;
+    const sw = moving ? Math.sin(bobT * .9) * .6 : 0;
+    avatar.legs.forEach((l, i) => { l.rotation.x = sw * (i ? 1 : -1); });
+    avatar.arms.forEach((a, i) => { a.rotation.x = -sw * (i ? 1 : -1) + (swingT > 0 ? -1.2 : 0); });
+    avatar.head.rotation.x = player.pitch;
+    avatar.body.position.y = player.sneak ? .95 : 1.1;
+  }
   {
     const s = swingT > 0 ? Math.sin((1 - swingT / .28) * Math.PI) : 0;
     const bobY = moving ? Math.sin(bobT) * .012 : 0;
@@ -832,7 +1445,13 @@ addEventListener('keydown', e => {
   if (e.repeat) return;
   if (e.code === 'Escape') { if (bagOpen || !$('settings').classList.contains('hidden')) resume(); else if (playing) pause(); return; }
   if (e.code === 'KeyE') { if (bagOpen) resume(); else if (playing) openBag(); return; }
+  if (bagOpen && /^Digit[1-9]$/.test(e.code) && hoverCell) {
+    const cont = hoverCell.dataset.cont;
+    if (cont !== 'creative' && cont !== 'result') swapToHotbar(cont, +hoverCell.dataset.i, +e.code.slice(-1) - 1);
+    return;
+  }
   if (e.code === 'F3') { $('debug').classList.toggle('hidden'); return; }
+  if (e.code === 'F5') { player.view = (player.view + 1) % 3; toast(['一人称', '三人称（背後）', '三人称（正面）'][player.view]); return; }
   if (!playing) return;
   keys[e.code] = true;
   if (/^Digit[1-9]$/.test(e.code)) { sel = +e.code.slice(-1) - 1; updateHotbar(); Snd.ui(); }
@@ -840,8 +1459,14 @@ addEventListener('keydown', e => {
     if (mode === 'creative') { player.fly = !player.fly; player.vel.y = 0; toast(player.fly ? '飛行：Space で上昇 / Shift で下降' : '飛行を終了'); }
     else toast('飛行はクリエイティブだけ');
   }
-  if (e.code === 'KeyQ' && mode === 'survival' && hotbar[sel] && inv[hotbar[sel]] > 0) {
-    inv[hotbar[sel]]--; toast(blockName(hotbar[sel]) + ' を1つ捨てた'); updateHotbar();
+  if (e.code === 'KeyQ') {                     // 足元に1つ捨てる
+    const st = bag.get(sel);
+    if (st) {
+      camera.getWorldDirection(dir);
+      drops.spawn(st.id, 1, player.pos.x + dir.x, player.pos.y + 1.2, player.pos.z + dir.z, .5, st.dur);
+      if (mode !== 'creative') bag.consumeAt(sel);
+      updateHotbar();
+    }
   }
   if (e.code === 'KeyP') doSave();
 });
@@ -906,11 +1531,7 @@ canvas.addEventListener('pointerdown', e => {
     tryLock();
   }
   if (e.button === 0) { mining = true; progress = 0; tryAttack(); }
-  else if (e.button === 2) {
-    if (useItem()) return;
-    if (hit) placeBlock(hit);
-    else toast('近くのブロックに向けて置こう');
-  }
+  else if (e.button === 2) rightClick();
 });
 addEventListener('pointerup', e => {
   if (e.pointerId === dragId) { dragging = false; dragId = null; }
@@ -935,6 +1556,15 @@ addEventListener('wheel', e => {
   sel = (sel + (e.deltaY > 0 ? 1 : 8)) % 9;
   updateHotbar();
 }, { passive: true });
+
+// 右クリック：設備を使う → 食べる → 置く
+function rightClick() {
+  if (!playing) return;
+  if (hit && !keys.ShiftLeft && interact(hit)) { swing(); return; }
+  if (useItem()) return;
+  if (hit) placeBlock(hit);
+  else toast('近くのブロックに向けて置こう');
+}
 
 function tryAttack() {
   camera.getWorldDirection(dir);
@@ -974,7 +1604,7 @@ const holdButton = (el, down, up) => {
 };
 holdButton($('touchJump'), () => { keys.Space = true; }, () => { keys.Space = false; });
 holdButton($('touchMine'), () => { if (playing && !tryAttack()) mining = true; }, () => { mining = false; });
-$('touchPlace').addEventListener('click', () => { if (playing && !useItem() && hit) placeBlock(hit); });
+$('touchPlace').addEventListener('click', () => { if (playing) rightClick(); });
 $('touchBag').addEventListener('click', () => (bagOpen ? resume() : openBag()));
 $('touchFly').addEventListener('click', () => {
   if (mode !== 'creative') { toast('飛行はクリエイティブだけ'); return; }
@@ -1015,9 +1645,10 @@ function applyMode(m, keepBar = false) {
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   if (m === 'survival') {
     player.fly = false;
-    if (!keepBar) hotbar = SURVIVAL_BAR.slice();
+    if (!keepBar) bag.clear();
   } else if (!keepBar) {
-    hotbar = CREATIVE_BAR.slice();
+    bag.clear();
+    CREATIVE_BAR.forEach((id, i) => bag.set(i, { id, n: maxStack(id) }));
     player.health = 20; player.food = 20; player.air = 10;
   }
   updateHotbar(); updateVitals();
@@ -1028,17 +1659,31 @@ $('menuButton').onclick = () => (playing ? pause() : start());
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { applyMode(b.dataset.mode); Snd.ui(); });
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { if (started) resume(); else closeOverlays(); });
 $('hotbar').onclick = e => { const b = e.target.closest('[data-slot]'); if (b) { sel = +b.dataset.slot; updateHotbar(); } };
-$('blocks').onclick = e => {
-  const b = e.target.closest('[data-give]');
-  if (!b) return;
-  const id = +b.dataset.give;
-  hotbar[sel] = id;
-  if (mode === 'creative') inv[id] = 999;
-  updateHotbar();
-  toast(blockName(id) + ' をスロット ' + (sel + 1) + ' へ');
-  Snd.ui();
-};
-$('recipes').onclick = e => { const b = e.target.closest('[data-recipe]'); if (b && !b.disabled) doCraft(+b.dataset.recipe); };
+// 持ち物画面のマス目：左クリックで丸ごと、右クリックで1個ずつ
+const invScreen = $('inventory');
+invScreen.addEventListener('mousedown', e => {
+  const cell = e.target.closest('[data-cont]');
+  if (cell) {
+    e.preventDefault();
+    const cont = cell.dataset.cont, i = +cell.dataset.i;
+    if (e.shiftKey && cont !== 'creative' && cont !== 'result') quickMove(cont, i);
+    else clickSlot(cont, i, e.button === 2);
+    Snd.ui(e.button !== 2);
+    return;
+  }
+  const rec = e.target.closest('[data-recipe]');
+  if (rec) { e.preventDefault(); layoutRecipe(+rec.dataset.recipe); }
+});
+invScreen.addEventListener('contextmenu', e => e.preventDefault());
+// 持ち物画面で数字キーを押すと、指しているマスをホットバーへ
+invScreen.addEventListener('mouseover', e => { hoverCell = e.target.closest('[data-cont]'); });
+let hoverCell = null;
+addEventListener('mousemove', e => {
+  if (!cursor) return;
+  const el = $('cursorStack');
+  el.style.left = e.clientX + 'px';
+  el.style.top = e.clientY + 'px';
+});
 
 // 設定
 function bindOption(id, out, key, fmt, apply) {
@@ -1076,14 +1721,31 @@ Snd.setVolume(settings.vol / 100);
 // セーブ／ロード
 // ---------------------------------------------------------------------------
 const collectState = () => ({
-  seed, time, mode, sel, hotbar, inv, dur, stats,
+  v: 3, seed, time, mode, sel, stats,
+  bag: bag.toJSON(),
+  drops: drops.toJSON(),
+  chests: [...chests].map(([k, list]) => [k, list.map(st => (st ? [st.id, st.n, st.dur ?? -1] : 0))]),
+  furnaces: [...furnaces].map(([k, f]) => [k, f.slots.map(st => (st ? [st.id, st.n] : 0)), f.fuel, f.cook]),
   p: player.pos.toArray(), yaw: player.yaw, pitch: player.pitch,
   health: player.health, food: player.food, air: player.air,
 });
 function applyState(s) {
   seed = s.seed; time = s.time; sel = s.sel ?? 0;
-  hotbar = s.hotbar || CREATIVE_BAR.slice();
-  inv = s.inv || {}; dur = s.dur || {}; stats = s.stats || stats;
+  stats = s.stats || stats;
+  bag.clear(); drops.clear(); chests.clear(); furnaces.clear();
+  if (s.bag) bag.fromJSON(s.bag);
+  else if (s.inv) {                         // 旧形式（v2）からの引き継ぎ
+    (s.hotbar || []).forEach((id, i) => { if (id) bag.set(i, { id, n: Math.max(1, s.inv[id] || 1) }); });
+    for (const [id, n] of Object.entries(s.inv)) if (n > 0) bag.add(+id, Math.min(n, 640));
+  }
+  if (s.drops) drops.fromJSON(s.drops);
+  (s.chests || []).forEach(([k, list]) => chests.set(k, list.map(v => (v ? { id: v[0], n: v[1], ...(v[2] >= 0 ? { dur: v[2] } : {}) } : null))));
+  (s.furnaces || []).forEach(([k, list, fuel, cook]) => {
+    const [x, y, z] = k.split(',').map(Number);
+    const f = furnaceAt(x, y, z);
+    f.slots = list.map(v => (v ? { id: v[0], n: v[1] } : null));
+    f.fuel = fuel; f.cook = cook;
+  });
   player.pos.fromArray(s.p); player.yaw = s.yaw; player.pitch = s.pitch;
   player.health = s.health ?? 20; player.food = s.food ?? 20; player.air = s.air ?? 10;
   player.vel.set(0, 0, 0); player.fly = false;
@@ -1207,9 +1869,12 @@ async function createWorld(newSeed) {
 
 $('new').onclick = async () => {
   if (started && !confirm('今の世界を作り直しますか？ 保存した世界は残ります。')) return;
-  inv = {}; dur = {}; stats = { mined: 0, placed: 0, hunted: 0 };
+  stats = { mined: 0, placed: 0, hunted: 0 };
   started = false; playing = false;
-  hotbar = mode === 'creative' ? CREATIVE_BAR.slice() : SURVIVAL_BAR.slice();
+  bag.clear();
+  drops.clear();
+  chests.clear(); furnaces.clear();
+  if (mode === 'creative') CREATIVE_BAR.forEach((id, i) => bag.set(i, { id, n: maxStack(id) }));
   $('play').innerHTML = '世界に入る <span>↗</span>';
   await createWorld((Math.random() * 1e9) | 0);
   toast('新しい島へようこそ');
@@ -1225,7 +1890,7 @@ addEventListener('resize', () => {
   layoutHeld();
 });
 
-let last = performance.now(), frames = 0, fps = 60, fpsT = 0, hudT = 0, spawnT = 0;
+let last = performance.now(), frames = 0, fps = 60, fpsT = 0, hudT = 0, spawnT = 0, furnaceT = 0;
 // 端末が重いときは自動で解像度を落とし、軽ければ戻す
 let pixelScale = Math.min(devicePixelRatio, 2), slowT = 0, fastT = 0, drawCalls = 0, drawTris = 0;
 function autoQuality() {
@@ -1254,8 +1919,19 @@ function loop(now) {
     mobs.update(dt, {
       player: player.pos, night: isNight(), survival: mode === 'survival',
       hitPlayer: n => damage(n, 'ゾンビにやられた'),
-      onVoice: type => Snd.mob(type),
+      onVoice: type => (type === 'fuse' ? Snd.fuse() : Snd.mob(type)),
+      explode,
     });
+    drops.update(dt, player.pos, (id, n, dur) => {
+      if (mode === 'creative') return 0;
+      const left = bag.add(id, n, dur);
+      if (left < n) { Snd.pickup(); updateHotbar(); if (bagOpen) renderScreen(); }
+      return left;
+    });
+    updateBlockPhysics(dt);
+    updateWeather(dt);
+    furnaceT += dt;
+    if (furnaceT > .25) { updateFurnaces(furnaceT); furnaceT = 0; }
     spawnT += dt;
     if (spawnT > 3) { spawnT = 0; if (mode === 'survival') mobs.trySpawnHostile(player.pos, isNight()); }
     if (isNight() && mode === 'survival') hint('夜になった。明かりを灯すか、家をつくって朝を待とう');
@@ -1318,9 +1994,19 @@ function loop(now) {
 // 開発用フック（コンソールから中身を覗ける）
 window.BLOCKWILD = {
   THREE, scene, camera, renderer, chunks, player, W3, matSolid, matAlpha, atlas, mobs, particles,
-  changeBlock, toast, focus, raycastVoxel, give, doCraft, mineBlock, placeBlock, canHarvest, breakSeconds, keys, settings,
+  changeBlock, toast, focus, raycastVoxel, give, mineBlock, placeBlock, canHarvest, breakSeconds, keys, settings, bag, drops, chests, furnaces,
   setTime: v => { time = v; },
-  get state() { return { mode, playing, ready, sel, hotbar, inv, time, dayLight, pending: pending.size }; },
+  openScreen, renderScreen, interact, updateFurnaces,
+  setWeather: v => { weather = v; weatherT = 600; },
+  explode,
+  get state() {
+    return {
+      mode, playing, ready, sel, time, dayLight, weather, rainLevel, pending: pending.size,
+      hotbar: bag.slots.slice(0, HOTBAR).map(s2 => (s2 ? s2.id : 0)),
+      inv: bag.slots.filter(Boolean).reduce((a, s2) => ((a[s2.id] = (a[s2.id] || 0) + s2.n), a), {}),
+      drops: drops.list.length, screen, cursor,
+    };
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ export const CH = 16;        // チャンクの一辺
 export const CX = W / CH;    // チャンク数（軸あたり）
 
 export const voxels = new Uint8Array(W * W * H);
+// 向きや開閉などの状態（階段・ドア・ベッド・かまど）。
+export const metaArr = new Uint8Array(W * W * H);
 export const light = new Uint8Array(W * W * H);
 export const biomeMap = new Uint8Array(W * W);
 export const heightMap = new Uint8Array(W * W);
@@ -22,12 +24,20 @@ export function getBlock(x, y, z) {
   if (y < 0) return ID.BEDROCK;
   return voxels[idx(x, y, z)];
 }
-export function setRaw(x, y, z, id) { if (inside(x, y, z)) voxels[idx(x, y, z)] = id; }
+export function setRaw(x, y, z, id, m = 0) {
+  if (!inside(x, y, z)) return;
+  const i = idx(x, y, z);
+  voxels[i] = id;
+  metaArr[i] = m;
+}
+export function getMeta(x, y, z) { return inside(x, y, z) ? metaArr[idx(x, y, z)] : 0; }
+export function setMeta(x, y, z, m) { if (inside(x, y, z)) metaArr[idx(x, y, z)] = m; }
 
 export const absorb = id => blocks[id].absorb;
 export const emit = id => blocks[id].emit;
 export const isSolid = id => blocks[id].solid;
 export const isOpaque = id => blocks[id].opaque;
+export const isFull = id => blocks[id].full !== false && blocks[id].opaque;
 
 export function skyAt(x, y, z) {
   if (x < 0 || z < 0 || x >= W || z >= W || y < 0) return 0;
@@ -113,12 +123,22 @@ export function relightAll() {
   spread(0, 0, 0, W - 1, H - 1, W - 1);
 }
 
-// 局所再計算。半径 R(=16) あれば光の届く範囲を完全に覆える。
-const R = 16;
-export function relight(bx, by, bz) {
-  const x0 = Math.max(0, bx - R), x1 = Math.min(W - 1, bx + R);
-  const z0 = Math.max(0, bz - R), z1 = Math.min(W - 1, bz + R);
-  const y0 = Math.max(0, by - R), y1 = Math.min(H - 1, by + R);
+// 局所再計算。半径は「そこにある光の強さ」に合わせて決める。
+// 松明を置いたときだけ広く、ただの土を置いたときは狭く計算する。
+export function autoRadius(bx, by, bz, oldId, newId) {
+  let strength = Math.max(emit(oldId || 0), emit(newId || 0));
+  for (const [dx, dy, dz] of NB) strength = Math.max(strength, blockAt(bx + dx, by + dy, bz + dz));
+  return Math.max(6, Math.min(16, strength + 2));
+}
+export function relight(bx, by, bz, R = 16) {
+  return relightRegion(bx - R, by - R, bz - R, bx + R, by + R, bz + R);
+}
+
+// 直方体の範囲をまとめて計算し直す（爆発など一度に多く変わるとき）
+export function relightRegion(ax0, ay0, az0, ax1, ay1, az1) {
+  const x0 = Math.max(0, ax0 | 0), x1 = Math.min(W - 1, ax1 | 0);
+  const z0 = Math.max(0, az0 | 0), z1 = Math.min(W - 1, az1 | 0);
+  const y0 = Math.max(0, ay0 | 0), y1 = Math.min(H - 1, ay1 | 0);
   const bw = x1 - x0 + 1, bd = z1 - z0 + 1, bh = y1 - y0 + 1;
   const before = new Uint8Array(bw * bd * bh);
   const bi = (x, y, z) => (x - x0) + bw * ((z - z0) + bd * (y - y0));
@@ -146,13 +166,13 @@ export function relight(bx, by, bz) {
   }
   spread(x0, y0, z0, x1, y1, z1);
 
-  let ax0 = 1e9, ay0 = 1e9, az0 = 1e9, ax1 = -1e9, ay1 = -1e9, az1 = -1e9;
+  let cx0 = 1e9, cy0 = 1e9, cz0 = 1e9, cx1 = -1e9, cy1 = -1e9, cz1 = -1e9;
   for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
     if (before[bi(x, y, z)] !== light[idx(x, y, z)]) {
-      if (x < ax0) ax0 = x; if (x > ax1) ax1 = x;
-      if (y < ay0) ay0 = y; if (y > ay1) ay1 = y;
-      if (z < az0) az0 = z; if (z > az1) az1 = z;
+      if (x < cx0) cx0 = x; if (x > cx1) cx1 = x;
+      if (y < cy0) cy0 = y; if (y > cy1) cy1 = y;
+      if (z < cz0) cz0 = z; if (z > cz1) cz1 = z;
     }
   }
-  return ax1 < ax0 ? null : { x0: ax0, x1: ax1, y0: ay0, y1: ay1, z0: az0, z1: az1 };
+  return cx1 < cx0 ? null : { x0: cx0, x1: cx1, y0: cy0, y1: cy1, z0: cz0, z1: cz1 };
 }

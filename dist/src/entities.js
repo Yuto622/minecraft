@@ -33,6 +33,7 @@ export const MOB = {
   sheep:   { name: 'ヒツジ', hp: 10, body: '#eeeadb', legs: '#d8d2c0', speed: 1, drop: ID.WOOL_W },
   chicken: { name: 'ニワトリ', hp: 6, body: '#f2f0e8', legs: '#e0a83c', speed: 1.3, drop: IT.MEAT },
   zombie:  { name: 'ゾンビ', hp: 18, body: '#4f7a52', legs: '#3c4f7a', speed: 1.5, hostile: true },
+  creeper: { name: 'クリーパー', hp: 14, body: '#5fa356', legs: '#4a8a46', speed: 1.7, hostile: true, fuse: true },
 };
 
 function buildMob(type) {
@@ -46,6 +47,14 @@ function buildMob(type) {
     box(.06, .2, .28, '#ffffff', -.2, .6, -.18, g);
     for (const z of [-.11, .11]) parts.legs.push(limb(.08, .32, .08, d.legs, 0, .4, z, g));
     box(.22, .16, .04, '#c8443c', .28, .95, 0, g);
+  } else if (type === 'creeper') {
+    box(.52, .9, .34, d.body, 0, 1.05, 0, g);
+    parts.head = box(.5, .5, .5, '#63ab58', 0, 1.72, 0, g);
+    box(.13, .13, .04, '#0f1a10', .12, 1.78, .25, parts.head);
+    box(.13, .13, .04, '#0f1a10', -.12, 1.78, .25, parts.head);
+    box(.13, .2, .04, '#0f1a10', 0, 1.64, .25, parts.head);
+    box(.26, .1, .04, '#0f1a10', 0, 1.56, .25, parts.head);
+    for (const x of [-.16, .16]) for (const z of [-.18, .18]) parts.legs.push(limb(.2, .58, .2, d.legs, x, .6, z, g));
   } else if (type === 'zombie') {
     box(.62, .86, .34, d.body, 0, 1.18, 0, g);
     parts.head = box(.52, .5, .5, '#6f9b6b', 0, 1.86, 0, g);
@@ -112,7 +121,7 @@ export class Mobs {
       const y = surface(x, z);
       if (y <= SEA) continue;
       if (getBlock(x, y + 1, z) || getBlock(x, y + 2, z)) continue;
-      this.spawn('zombie', x + .5, y + 1, z + .5);
+      this.spawn(Math.random() < .35 ? 'creeper' : 'zombie', x + .5, y + 1, z + .5);
       return;
     }
   }
@@ -177,11 +186,15 @@ export class Mobs {
 
       // 落下と着地
       const gy = groundAt(pos.x, pos.z, pos.y + .6);
-      if (gy >= 0 && pos.y > gy + .02) {
+      if (gy < 0) {                                  // 足場が無ければ落ちる
+        m.vy -= dt * 22;
+        pos.y += m.vy * dt;
+        if (pos.y < -4) { this.scene.remove(m.g); this.list.splice(i, 1); continue; }
+      } else if (pos.y > gy + .02) {
         m.vy -= dt * 22;
         pos.y = Math.max(gy, pos.y + m.vy * dt);
         if (pos.y <= gy) { pos.y = gy; m.vy = 0; }
-      } else if (gy >= 0) {
+      } else {
         pos.y += (gy - pos.y) * Math.min(1, dt * 12);
         m.vy = 0;
       }

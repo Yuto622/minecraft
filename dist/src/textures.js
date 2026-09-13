@@ -140,7 +140,21 @@ const painters = {
   bench_top: t => { painters.planks(t); t.rect(2, 2, 28, 28, '#8a6a3d', .25); t.line(16, 2, 16, 29, '#5f4726', .6); t.line(2, 16, 29, 16, '#5f4726', .6); },
   bench_side: t => { painters.planks(t); t.rect(0, 0, TS, 9, '#8a6a3d', .5); for (let x = 2; x < TS; x += 7) t.rect(x, 11, 4, 6, '#5f4726', .5); },
   brick: t => { t.base('#ac6955', .06); for (let y = 0; y < TS; y += 8) { t.rect(0, y, TS, 2, '#cfc3b4', .95); const off = (y / 8) % 2 ? 8 : 0; for (let x = off; x < TS + 8; x += 16) t.rect(x, y + 2, 2, 6, '#cfc3b4', .95); } },
-  glass: t => { t.clear(); t.rect(0, 0, TS, TS, '#cfeff0', .16); for (let i = 0; i < TS; i++) { t.set(i, 0, hex2rgb('#e8fbfb'), 205); t.set(i, TS - 1, hex2rgb('#bcdfe0'), 205); t.set(0, i, hex2rgb('#e8fbfb'), 205); t.set(TS - 1, i, hex2rgb('#bcdfe0'), 205); } for (let i = 0; i < 9; i++) { const x = 4 + Math.floor(rnd() * 20); t.line(x, 5, x + 6, 11, '#ffffff', .55); } for (let i = 0; i < TS * TS; i++) if (rnd() > .985) { const x = i % TS, y = (i / TS) | 0; t.set(x, y, hex2rgb('#ffffff'), 120); } },
+  glass: t => {
+    t.base('#dff6f7', .04);
+    for (let i = 0; i < TS * TS; i++) t.d[i * 4 + 3] = 28;          // 中はほぼ透明
+    const edge = (x, y, hex, a) => t.set(x, y, hex2rgb(hex), a);
+    for (let i = 0; i < TS; i++) {                                   // 枠
+      edge(i, 0, '#f4ffff', 230); edge(i, 1, '#e2f6f7', 150);
+      edge(i, TS - 1, '#b9dee0', 230); edge(i, TS - 2, '#cfeaec', 150);
+      edge(0, i, '#f4ffff', 230); edge(1, i, '#e2f6f7', 150);
+      edge(TS - 1, i, '#b9dee0', 230); edge(TS - 2, i, '#cfeaec', 150);
+    }
+    for (let k = 0; k < 7; k++) {                                    // 光の筋
+      const x = 4 + Math.floor(rnd() * 20), y = 4 + Math.floor(rnd() * 16);
+      for (let j = 0; j < 7; j++) edge(x + j, y + j, '#ffffff', 120);
+    }
+  },
   ice: t => { t.base('#9ccdee', .06); t.blobs('#b9e0f6', 6, 3, 7, .5); for (let i = 0; i < 6; i++) { const x = Math.floor(rnd() * TS), y = Math.floor(rnd() * TS); t.line(x, y, x + 8 - Math.floor(rnd() * 16), y + 10, '#ffffff', .35); } for (let i = 0; i < TS * TS; i++) t.d[i * 4 + 3] = 190; },
   water: t => { t.base('#2f7fae', .06); for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) { const w = Math.sin((x * .4 + y * .22)) * .5 + Math.sin(y * .33 - x * .11) * .5; const c = t.get(x, y), f = 1 + w * .1; t.set(x, y, [c[0] * f, c[1] * f, c[2] * f], 190); } },
   coal_ore: t => { painters.stone(t); t.blobs('#26292b', 5, 2, 4, .95); },
@@ -165,7 +179,40 @@ const painters = {
   wool_y: t => t.base('#d6ab3a', .07).speck('#e8bf4e', .18).blobs('#b8912c', 5, 3, 6, .25),
   wool_k: t => t.base('#2b2b30', .1).speck('#3a3a41', .18).blobs('#1f1f24', 5, 3, 6, .25),
   wool_g: t => t.base('#4e7a35', .07).speck('#5f8e42', .18).blobs('#3f6529', 5, 3, 6, .25),
+  stone_brick: t => { t.base('#8a8f8c', .07); for (let y = 0; y < TS; y += 8) { t.line(0, y, TS - 1, y, '#6d726f', .9); const off = (y / 8) % 2 ? 8 : 0; for (let x = off; x < TS + 8; x += 16) t.rect(x, y + 1, 1, 7, '#6d726f', .9); } t.speck('#9aa09c', .07); },
+  furnace_side: t => { painters.stone(t); t.rect(0, 0, TS, 3, '#6c7170', .5); },
+  furnace_top: t => { painters.stone(t); t.rect(6, 6, 20, 20, '#6a706e', .5); t.rect(9, 9, 14, 14, '#585e5c', .6); },
+  furnace_front: t => { painters.stone(t); t.rect(6, 14, 20, 14, '#3a3d3c', .95); t.rect(8, 16, 16, 10, '#26282a', 1); t.rect(6, 8, 20, 4, '#6a706e', .6); },
+  furnace_lit: t => { painters.furnace_front(t); t.rect(8, 16, 16, 10, '#d8631f', .95); t.rect(9, 20, 14, 6, '#ffb347', .9); t.rect(11, 24, 10, 3, '#ffe08a', .8); },
+  chest_top: t => { t.base('#a97c3f', .07); t.rect(1, 1, 30, 30, '#8c6431', .45); for (let x = 0; x < TS; x += 10) t.line(x, 1, x, 30, '#7a5629', .35); },
+  chest_side: t => { t.base('#a97c3f', .07); t.rect(0, 0, TS, 7, '#8c6431', .5); t.rect(0, 13, TS, 3, '#5f4423', .7); for (let x = 0; x < TS; x += 10) t.line(x, 0, x, TS - 1, '#7a5629', .3); },
+  chest_front: t => { painters.chest_side(t); t.rect(13, 12, 6, 8, '#d8c37a', .95); t.rect(15, 15, 2, 3, '#3a3128', 1); },
+  door_top: t => { t.base('#9a6f3c', .06); t.rect(1, 1, 30, 30, '#825c30', .4); t.rect(6, 4, 20, 14, '#c9e6ea', .55); t.rect(6, 4, 20, 2, '#6b4a26', .8); t.rect(2, 26, 28, 3, '#6b4a26', .55); t.rect(25, 20, 3, 5, '#d8c37a', .9); },
+  door_bottom: t => { t.base('#9a6f3c', .06); t.rect(1, 1, 30, 30, '#825c30', .4); t.rect(4, 5, 24, 22, '#8a6234', .5); t.rect(4, 5, 24, 2, '#6b4a26', .7); t.rect(25, 12, 3, 5, '#d8c37a', .9); },
+  bed_top: t => { t.base('#b03a34', .07); t.rect(2, 2, 28, 12, '#f2efe6', .9); t.rect(3, 3, 26, 9, '#ffffff', .5); t.rect(0, 0, TS, 2, '#8d2b26', .6); },
+  bed_side: t => { t.base('#b03a34', .07); t.rect(0, 0, TS, 10, '#f2efe6', .85); t.rect(0, 24, TS, 8, '#9a7444', .9); },
+  ladder: t => { t.clear(); t.rect(4, 0, 3, TS, '#a5813f', 1); t.rect(25, 0, 3, TS, '#a5813f', 1); for (let y = 3; y < TS; y += 9) t.rect(4, y, 24, 3, '#8d6c33', 1); },
 };
+
+// 破壊のひび（10段階）
+for (let i = 0; i < 10; i++) {
+  painters['crack' + i] = t => {
+    t.clear();
+    srand(700 + i * 13);
+    const n = 3 + i * 3;
+    for (let k = 0; k < n; k++) {
+      let x = Math.floor(rnd() * TS), y = Math.floor(rnd() * TS);
+      const len = 4 + Math.floor(rnd() * (3 + i * 2));
+      for (let j = 0; j < len; j++) {
+        t.set(x, y, [12, 10, 10], 205);
+        t.set(x + 1, y, [70, 66, 64], 120);
+        x += Math.round(rnd() * 2 - 1);
+        y += Math.round(rnd() * 2 - 1);
+        if (x < 0 || y < 0 || x >= TS || y >= TS) break;
+      }
+    }
+  };
+}
 
 // --- アトラス構築 -----------------------------------------------------------
 export const layer = {};      // タイル名 -> レイヤー番号
