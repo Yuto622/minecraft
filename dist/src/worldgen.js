@@ -186,10 +186,12 @@ export function* generate() {
       for (let j = 1; j <= hgt; j++) setRaw(x, y + j, z, ID.CACTUS);
     } else if (top === ID.GRASS || top === ID.SNOW_GRASS || top === ID.PODZOL) {
       const q = hash2(x, z, 106);
-      if (b === BIOME.SWAMP && q > .93) setRaw(x, y + 1, z, ID.MUSHROOM);
+      const cold = b === BIOME.SNOW || (b === BIOME.MOUNTAIN && y > SEA + 30);
+      if (cold) { /* 雪原は草花を生やさず、一面の雪にする */ }
+      else if (b === BIOME.SWAMP && q > .93) setRaw(x, y + 1, z, ID.MUSHROOM);
       else if (q > .93) setRaw(x, y + 1, z, ID.TALL_GRASS);
       else if (q > .915) setRaw(x, y + 1, z, hash2(x, z, 107) > .5 ? ID.ROSE : ID.DAISY);
-      if (b === BIOME.SNOW && !getBlock(x, y + 1, z) && q > .3) setRaw(x, y + 1, z, ID.SNOW);
+      if (cold && !getBlock(x, y + 1, z)) setRaw(x, y + 1, z, ID.SNOW);
     }
   }
 

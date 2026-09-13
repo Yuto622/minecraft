@@ -80,10 +80,24 @@ const crack = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), crackMat);
 crack.visible = false;
 scene.add(crack);
 
-// 手に持っているもの
+// 手に持っているもの。
+// 本編とは別のシーン・別の画角で最後に重ねて描くので、画面の端でも歪まない。
+const viewScene = new THREE.Scene();
+const viewCamera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, .01, 6);
+const viewHemi = new THREE.HemisphereLight('#ffffff', '#5a6472', 2.2);
+const viewSun = new THREE.DirectionalLight('#fff3d6', 2.1);
+viewSun.position.set(-.6, 1, .8);
+viewScene.add(viewHemi, viewSun);
+
+// 腕。持ち物の後ろにいつも見えている。
+const arm = new THREE.Mesh(new THREE.BoxGeometry(.16, .5, .16), new THREE.MeshLambertMaterial({ color: '#c98f6a' }));
+arm.rotation.set(-.5, .1, .38);
+arm.visible = false;
+viewScene.add(arm);
+
 let held = null;
 function setHeld(id) {
-  if (held) { camera.remove(held); held.geometry.dispose(); }
+  if (held) { viewScene.remove(held); held.geometry.dispose(); }
   held = null;
   if (!id) return;
   if (isItem(id)) {
@@ -98,7 +112,7 @@ function setHeld(id) {
       texs ? texs.map(t => new THREE.MeshLambertMaterial({ map: t })) : new THREE.MeshLambertMaterial({ color: blockColor(id) }));
   }
   held.rotation.set(.22, -.42, .12);
-  camera.add(held);
+  viewScene.add(held);
   layoutHeld();
 }
 
@@ -107,12 +121,16 @@ function setHeld(id) {
 const heldBase = new THREE.Vector3();
 function layoutHeld() {
   const d = .62;
-  const vh = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * d;
-  heldBase.set(vh * camera.aspect * .62, -vh * .6, -d);
+  viewCamera.aspect = camera.aspect;
+  viewCamera.updateProjectionMatrix();
+  const vh = Math.tan(THREE.MathUtils.degToRad(viewCamera.fov / 2)) * d;
+  heldBase.set(Math.min(vh * camera.aspect * .62, vh * 1.15), -vh * .6, -d);
   if (held) {
     held.position.copy(heldBase);
-    held.scale.setScalar(clamp(vh * .95, .34, .8));
+    held.scale.setScalar(vh * .98);
   }
+  arm.position.set(heldBase.x + vh * .2, heldBase.y - vh * .5, heldBase.z - .04);
+  arm.scale.setScalar(vh * 2.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,14 +640,14 @@ function updateSky() {
   sky.material.uniforms.uBottom.value.copy(cBot);
   sky.material.uniforms.uSunColor.value.copy(cSun);
   sky.material.uniforms.uSunDir.value.copy(sunDir.y > -.2 ? sunDir : sunDir.clone().negate());
-  sky.material.uniforms.uStars.value = clamp(1 - dayLight * 1.6, 0, 1);
+  sky.material.uniforms.uStars.value = clamp((.34 - dayLight) * 4.5, 0, 1);
 
   const under = blockAtEye() === ID.WATER;
   document.body.classList.toggle('underwater', under && playing);
   const far = settings.dist * CH;
   scene.fog.color.copy(under ? new THREE.Color('#1d5d75') : cFog);
-  scene.fog.near = under ? 0.5 : far * .42;
-  scene.fog.far = under ? 16 : far;
+  scene.fog.near = under ? 0.5 : far * .72;
+  scene.fog.far = under ? 16 : far * 1.12;
   sky.visible = !under;
   renderer.setClearColor(scene.fog.color, 1);
 
@@ -757,10 +775,16 @@ function updatePlayer(dt) {
   const bob = settings.bob && player.onGround && moving ? Math.sin(bobT) * .035 : 0;
   camera.position.set(player.pos.x, player.pos.y + EYE + bob, player.pos.z);
   camera.rotation.set(player.pitch, player.yaw, settings.bob ? Math.cos(bobT) * .008 : 0);
-  if (held) {
+  {
     const s = swingT > 0 ? Math.sin((1 - swingT / .28) * Math.PI) : 0;
-    held.position.set(heldBase.x - s * .1, heldBase.y - s * .13 + (moving ? Math.sin(bobT) * .012 : 0), heldBase.z + s * .08);
-    held.rotation.set(.22 + s * .9, -.42, .12);
+    const bobY = moving ? Math.sin(bobT) * .012 : 0;
+    if (held) {
+      held.position.set(heldBase.x - s * .08, heldBase.y - s * .1 + bobY, heldBase.z + s * .06);
+      held.rotation.set(.22 + s * .9, -.42, .12);
+    }
+    arm.visible = !!held;
+    arm.position.y = heldBase.y - arm.scale.y * .25 - s * .1 + bobY;
+    arm.rotation.x = -.5 + s * .8;
   }
   swingT = Math.max(0, swingT - dt);
 }
@@ -1099,7 +1123,7 @@ addEventListener('resize', () => {
 
 let last = performance.now(), frames = 0, fps = 60, fpsT = 0, hudT = 0, spawnT = 0;
 // 端末が重いときは自動で解像度を落とし、軽ければ戻す
-let pixelScale = Math.min(devicePixelRatio, 2), slowT = 0, fastT = 0;
+let pixelScale = Math.min(devicePixelRatio, 2), slowT = 0, fastT = 0, drawCalls = 0, drawTris = 0;
 function autoQuality() {
   if (!playing) return;
   if (fps < 34) { slowT++; fastT = 0; } else if (fps > 55) { fastT++; slowT = 0; } else { slowT = fastT = 0; }
@@ -1163,7 +1187,7 @@ function loop(now) {
     $('target').textContent = hit ? blockName(hit.id) : '';
     if (!$('debug').classList.contains('hidden')) {
       $('debug').textContent =
-        `FPS ${fps.toFixed(0)}  draw ${renderer.info.render.calls}  tri ${(renderer.info.render.triangles / 1000).toFixed(0)}k\n` +
+        `FPS ${fps.toFixed(0)}  draw ${drawCalls}  tri ${(drawTris / 1000).toFixed(0)}k  px ${pixelScale.toFixed(2)}\n` +
         `chunk ${chunks.size} / 待ち ${pending.size}\n` +
         `光 sky ${W3.skyAt(player.pos.x | 0, (player.pos.y + 1) | 0, player.pos.z | 0)} block ${W3.blockAt(player.pos.x | 0, (player.pos.y + 1) | 0, player.pos.z | 0)}\n` +
         `生き物 ${mobs.list.length}  昼 ${dayLight.toFixed(2)}\n` +
@@ -1171,6 +1195,19 @@ function loop(now) {
     }
   }
   renderer.render(scene, camera);
+  drawCalls = renderer.info.render.calls;
+  drawTris = renderer.info.render.triangles;
+  // 手元のものを別画角で重ねる
+  if (held && playing) {
+    viewHemi.intensity = .7 + dayLight * 1.8;
+    viewSun.intensity = .4 + dayLight * 1.9;
+    viewSun.color.copy(cSun);
+    viewHemi.color.copy(cMid);
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(viewScene, viewCamera);
+    renderer.autoClear = true;
+  }
 }
 
 // 開発用フック（コンソールから中身を覗ける）
