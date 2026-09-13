@@ -62,10 +62,13 @@
 <div id="touch">
   <div id="stick"><div id="stickKnob"></div></div>
   <div class="actions">
-    <button id="touchJump" data-key="Space">跳ぶ</button>
-    <button id="touchMine">壊す</button>
-    <button id="touchPlace">置く</button>
-    <button id="touchBag">持物</button>
+    <button id="touchMine" class="big">⛏<span>壊す</span></button>
+    <button id="touchPlace" class="big">▣<span>置く</span></button>
+    <button id="touchJump">↑<span>跳ぶ</span></button>
+    <button id="touchFly">✈<span>飛行</span></button>
+    <button id="touchPrev">◀<span>前</span></button>
+    <button id="touchNext">▶<span>次</span></button>
+    <button id="touchBag" class="wide">🎒<span>持ち物とクラフト</span></button>
   </div>
 </div>
 
@@ -113,6 +116,7 @@
     <label>視野角 <output id="outFov"></output><input id="optFov" type="range" min="60" max="105" step="1"></label>
     <label>マウス感度 <output id="outSens"></output><input id="optSens" type="range" min="4" max="40" step="1"></label>
     <label>音量 <output id="outVol"></output><input id="optVol" type="range" min="0" max="100" step="1"></label>
+    <label class="check"><input id="optButtons" type="checkbox"> 画面に操作ボタンを表示する</label>
     <label class="check"><input id="optHints" type="checkbox"> ヒントを表示する</label>
     <label class="check"><input id="optBob" type="checkbox"> 歩行の揺れ</label>
   </div>

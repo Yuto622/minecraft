@@ -21,7 +21,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
-const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, hints: true, bob: true };
+const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, hints: true, bob: true, buttons: false };
 const settings = Object.assign({}, defaults, JSON.parse(localStorage.getItem('blockwild-settings') || '{}'));
 const saveSettings = () => localStorage.setItem('blockwild-settings', JSON.stringify(settings));
 
@@ -203,7 +203,7 @@ const player = {
   onGround: false, inWater: false, sprint: false, sneak: false, fly: false,
   health: 20, food: 20, air: 10, hurtCd: 0, regenT: 0, starveT: 0,
 };
-const HALF = .3, BODY = 1.8, EYE = 1.62;
+const HALF = .3, BODY = 1.8, EYE = 1.62, STEP = 1.02;
 
 function boxBlocked(x, y, z) {
   for (let bx = Math.floor(x - HALF); bx <= Math.floor(x + HALF); bx++)
@@ -212,6 +212,7 @@ function boxBlocked(x, y, z) {
         if (isSolid(getBlock(bx, by, bz))) return true;
   return false;
 }
+let stepped = false;
 function moveAxis(axis, amount) {
   if (!amount) return;
   const steps = Math.ceil(Math.abs(amount) / .2);
@@ -221,13 +222,35 @@ function moveAxis(axis, amount) {
     p[axis] += d;
     if (axis === 'x') p.x = clamp(p.x, HALF + .01, W - HALF - .01);
     if (axis === 'z') p.z = clamp(p.z, HALF + .01, W - HALF - .01);
-    if (boxBlocked(p.x, p.y, p.z)) {
-      if (axis === 'y') { if (d < 0) player.onGround = true; player.vel.y = 0; }
-      return;
+    if (!boxBlocked(p.x, p.y, p.z)) {
+      player.pos.copy(p);
+      if (axis === 'y' && d < 0) player.onGround = false;
+      continue;
     }
-    player.pos.copy(p);
-    if (axis === 'y' && d < 0) player.onGround = false;
+    if (axis === 'y') { if (d < 0) player.onGround = true; player.vel.y = 0; return; }
+    // 1ブロックの段差は自動で上る（いちいち跳ばなくていい）。
+    // 1フレームに1段までに制限しているので、壁をよじ登ることはない。
+    if (!stepped && (player.onGround || player.inWater) && !player.fly &&
+        !boxBlocked(p.x, p.y + STEP, p.z) && !boxBlocked(player.pos.x, player.pos.y + STEP, player.pos.z)) {
+      player.pos.set(p.x, player.pos.y + STEP, p.z);
+      player.onGround = false;
+      stepped = true;
+      continue;
+    }
+    return;
   }
+}
+
+// 地形の中に埋まってしまったら上へ押し出す（保存データの読み込み直後など）
+function unstick() {
+  if (!boxBlocked(player.pos.x, player.pos.y, player.pos.z)) return;
+  for (let i = 0; i < 6; i++) {
+    player.pos.y += 1;
+    player.vel.y = 0;
+    if (!boxBlocked(player.pos.x, player.pos.y, player.pos.z)) return;
+  }
+  const sp = findSpawn();
+  player.pos.set(sp[0], sp[1], sp[2]);
 }
 
 const blockAtFeet = () => getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y + .1), Math.floor(player.pos.z));
@@ -384,17 +407,21 @@ function mineBlock(hit) {
 
 function placeBlock(hit) {
   const id = hotbar[sel];
-  if (!id || isItem(id)) return;
+  if (!id) { toast('スロットが空。E で持ち物から選ぼう'); return; }
+  if (isItem(id)) { toast(blockName(id) + ' は置けない道具・素材'); return; }
   const { px, py, pz } = hit;
   if (px < 0 || pz < 0 || px >= W || pz >= W || py < 0 || py >= H) { toast('この世界の外側には置けない'); return; }
   const there = getBlock(px, py, pz);
-  if (there && there !== ID.WATER) return;
+  if (there && there !== ID.WATER) { toast('そこにはもうブロックがある'); return; }
   if (mode === 'survival' && !(inv[id] > 0)) { toast(blockName(id) + ' を持っていない'); return; }
   const b = blocks[id];
   if (b.plant && !isSolid(getBlock(px, py - 1, pz))) { toast('地面の上にしか置けない'); return; }
-  if (b.solid) { // 自分と重ならないように
+  if (b.solid) { // 自分と重なる場所には置けない
     const p = player.pos;
-    if (px + 1 > p.x - HALF && px < p.x + HALF && pz + 1 > p.z - HALF && pz < p.z + HALF && py + 1 > p.y && py < p.y + BODY) return;
+    if (px + 1 > p.x - HALF && px < p.x + HALF && pz + 1 > p.z - HALF && pz < p.z + HALF && py + 1 > p.y && py < p.y + BODY) {
+      toast('自分の足元すぎる。少し離れて置こう');
+      return;
+    }
   }
   changeBlock(px, py, pz, id);
   Snd.place(soundMat(id));
@@ -426,7 +453,9 @@ function attack(mob) {
   Snd.hit();
   swing();
   particles.burst(mob.g.position.x - .4, mob.g.position.y + .6, mob.g.position.z - .4, '#c0503f', 7, .7);
-  const dead = mobs.damage(mob, dmg, (drop, n) => { if (mode === 'survival') { give(drop, n); toast(blockName(drop) + ' ×' + n + ' を手に入れた'); } });
+  const dead = mobs.damage(mob, dmg, player.pos, (drop, n) => {
+    if (mode === 'survival') { give(drop, n); toast(blockName(drop) + ' ×' + n + ' を手に入れた'); }
+  });
   if (dead) { Snd.mob(mob.type); stats.hunted++; }
   if (t) damageTool(1);
 }
@@ -700,6 +729,8 @@ function updateMining(dt) {
 // ---------------------------------------------------------------------------
 let stepT = 0, bobT = 0;
 function updatePlayer(dt) {
+  stepped = false;
+  unstick();
   const feet = blockAtFeet(), eye = blockAtEye();
   player.inWater = feet === ID.WATER || eye === ID.WATER;
   player.sprint = !!keys.ShiftLeft && !player.fly && (keys.KeyW || touchMove.y < -.3) && !player.inWater;
@@ -815,36 +846,86 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyP') doSave();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; if (playing) pause(); });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; touchMove.x = touchMove.y = 0; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && playing) pause(); });
 
 const canvas = $('game');
 canvas.oncontextmenu = e => e.preventDefault();
-document.addEventListener('pointerlockchange', () => {
-  if (!document.pointerLockElement && playing && !isTouch && !bagOpen) pause();
-});
 
-let lookId = null, lastX = 0, lastY = 0;
+// ポインタロック（マウスを画面に固定する仕組み）は環境によっては使えない。
+// 取れなくても遊べるように、ロックの有無で操作を分岐させず、
+// ロックが無いときはドラッグで視点を回せるようにしている。
+let hadLock = false;
+const locked = () => document.pointerLockElement === canvas;
+function tryLock() {
+  // 画面ボタンを出しているときはマウスを固定しない（ボタンが押せなくなるため）
+  if (isTouch || locked() || settings.buttons) return;
+  const r = canvas.requestPointerLock?.();
+  if (r?.catch) r.catch(() => freeLook());
+}
+function freeLook() {
+  if (document.body.classList.contains('freelook')) return;
+  document.body.classList.add('freelook');
+  if (!settings.buttons) { settings.buttons = true; saveSettings(); applyButtons(); }
+  toast('ドラッグで視点、画面のボタンで操作できます');
+  hint('マウスを押したまま動かすと見回せる。移動は W A S D か左下のスティック');
+}
+document.addEventListener('pointerlockchange', () => {
+  if (locked()) {
+    hadLock = true;
+    document.body.classList.remove('freelook');
+    $('hint').classList.remove('show');
+    return;
+  }
+  // ロックが外れてもゲームは止めない。止めるとタブ切り替えや Esc のたびに
+  // 「動かない」状態に見えてしまうため、ドラッグ視点に切り替えて続行する。
+  if (hadLock && playing && !bagOpen) {
+    hadLock = false;
+    document.body.classList.add('freelook');
+    hint('視点はドラッグで動かせます。クリックでマウス固定に戻る／Esc か Ⅱ でメニュー', false);
+  }
+});
+document.addEventListener('pointerlockerror', freeLook);
+
+let dragging = false, lastX = 0, lastY = 0, dragId = null;
+// ポインタの捕捉は環境によって例外を投げる。ここで落とすと
+// この後の「壊す・置く」まで実行されなくなるので、必ず握りつぶす。
+const capture = (el, id) => { try { el.setPointerCapture?.(id); } catch { /* 無視 */ } };
 canvas.addEventListener('pointerdown', e => {
   if (!playing) return;
   Snd.resume();
   if (e.pointerType === 'touch') {
-    if (e.clientX < innerWidth * .35) return;   // 左下はスティック
-    lookId = e.pointerId; lastX = e.clientX; lastY = e.clientY;
-    canvas.setPointerCapture(e.pointerId);
+    if (e.clientX < innerWidth * .38) return;      // 左下はスティックの領域
+    dragId = e.pointerId; dragging = true; lastX = e.clientX; lastY = e.clientY;
+    capture(canvas, e.pointerId);
     return;
   }
-  if (!document.pointerLockElement) { canvas.requestPointerLock?.(); return; }
+  if (!locked()) {                                  // ロックが無くてもドラッグで見回せる
+    dragId = e.pointerId; dragging = true; lastX = e.clientX; lastY = e.clientY;
+    capture(canvas, e.pointerId);
+    tryLock();
+  }
   if (e.button === 0) { mining = true; progress = 0; tryAttack(); }
-  if (e.button === 2) { if (!useItem() && hit) placeBlock(hit); }
+  else if (e.button === 2) {
+    if (useItem()) return;
+    if (hit) placeBlock(hit);
+    else toast('近くのブロックに向けて置こう');
+  }
 });
-addEventListener('pointerup', e => { if (e.pointerId === lookId) lookId = null; mining = false; });
+addEventListener('pointerup', e => {
+  if (e.pointerId === dragId) { dragging = false; dragId = null; }
+  mining = false;
+});
+addEventListener('pointercancel', () => { dragging = false; dragId = null; mining = false; });
 addEventListener('pointermove', e => {
   if (!playing) return;
   const s = settings.sens / 9000;
-  if (document.pointerLockElement) {
-    player.yaw -= e.movementX * s; player.pitch -= e.movementY * s;
-  } else if (e.pointerId === lookId) {
-    player.yaw -= (e.clientX - lastX) * s * 2.6; player.pitch -= (e.clientY - lastY) * s * 2.6;
+  if (locked()) {
+    player.yaw -= e.movementX * s;
+    player.pitch -= e.movementY * s;
+  } else if (dragging && e.pointerId === dragId) {
+    player.yaw -= (e.clientX - lastX) * s * 2.6;
+    player.pitch -= (e.clientY - lastY) * s * 2.6;
     lastX = e.clientX; lastY = e.clientY;
   } else return;
   player.pitch = clamp(player.pitch, -1.54, 1.54);
@@ -868,7 +949,10 @@ function tryAttack() {
 const stick = $('stick'), knob = $('stickKnob');
 let stickId = null;
 stick?.addEventListener('pointerdown', e => {
-  stickId = e.pointerId; stick.setPointerCapture(e.pointerId); moveStick(e);
+  e.preventDefault();
+  stickId = e.pointerId;
+  capture(stick, e.pointerId);
+  moveStick(e);
 });
 stick?.addEventListener('pointermove', e => { if (e.pointerId === stickId) moveStick(e); });
 stick?.addEventListener('pointerup', () => { stickId = null; touchMove.x = touchMove.y = 0; knob.style.transform = ''; });
@@ -882,12 +966,23 @@ function moveStick(e) {
   touchMove.x = dx; touchMove.y = dy;
   knob.style.transform = `translate(${dx * 34}px,${dy * 34}px)`;
 }
-$('touchJump').addEventListener('pointerdown', () => { keys.Space = true; });
-$('touchJump').addEventListener('pointerup', () => { keys.Space = false; });
-$('touchMine').addEventListener('pointerdown', () => { if (!tryAttack()) mining = true; });
-$('touchMine').addEventListener('pointerup', () => { mining = false; });
-$('touchPlace').addEventListener('click', () => { if (!useItem() && hit) placeBlock(hit); });
-$('touchBag').addEventListener('click', () => openBag());
+const holdButton = (el, down, up) => {
+  el.addEventListener('pointerdown', e => { e.preventDefault(); capture(el, e.pointerId); down(); });
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('pointerleave', up);
+};
+holdButton($('touchJump'), () => { keys.Space = true; }, () => { keys.Space = false; });
+holdButton($('touchMine'), () => { if (playing && !tryAttack()) mining = true; }, () => { mining = false; });
+$('touchPlace').addEventListener('click', () => { if (playing && !useItem() && hit) placeBlock(hit); });
+$('touchBag').addEventListener('click', () => (bagOpen ? resume() : openBag()));
+$('touchFly').addEventListener('click', () => {
+  if (mode !== 'creative') { toast('飛行はクリエイティブだけ'); return; }
+  player.fly = !player.fly; player.vel.y = 0;
+  toast(player.fly ? '飛行：跳ぶ で上昇' : '飛行を終了');
+});
+$('touchPrev').addEventListener('click', () => { sel = (sel + 8) % 9; updateHotbar(); Snd.ui(); });
+$('touchNext').addEventListener('click', () => { sel = (sel + 1) % 9; updateHotbar(); Snd.ui(); });
 
 // ---------------------------------------------------------------------------
 // メニューまわり
@@ -900,7 +995,7 @@ function start() {
   playing = true; started = true;
   camera.fov = settings.fov; camera.updateProjectionMatrix(); layoutHeld();
   Snd.resume();
-  if (!isTouch) canvas.requestPointerLock?.();
+  tryLock();
   updateHotbar(); updateVitals();
 }
 const resume = () => { closeOverlays(); start(); };
@@ -961,6 +1056,15 @@ bindOption('optDist', 'outDist', 'dist', v => v + ' チャンク', () => cullChu
 bindOption('optFov', 'outFov', 'fov', v => v + '°', v => { camera.fov = v; camera.updateProjectionMatrix(); layoutHeld(); });
 bindOption('optSens', 'outSens', 'sens', v => String(v));
 bindOption('optVol', 'outVol', 'vol', v => v + '%', v => Snd.setVolume(v / 100));
+function applyButtons() {
+  const on = !!settings.buttons && !isTouch;
+  document.body.classList.toggle('buttons', on);
+  $('optButtons').checked = !!settings.buttons;
+  if (on && locked()) document.exitPointerLock?.();   // カーソルを出してボタンを押せるように
+  if (on) document.body.classList.add('freelook');
+  else if (playing) tryLock();
+}
+$('optButtons').onchange = () => { settings.buttons = $('optButtons').checked; saveSettings(); applyButtons(); };
 $('optHints').checked = settings.hints;
 $('optHints').onchange = () => { settings.hints = $('optHints').checked; saveSettings(); };
 $('optBob').checked = settings.bob;
@@ -1150,6 +1254,7 @@ function loop(now) {
     mobs.update(dt, {
       player: player.pos, night: isNight(), survival: mode === 'survival',
       hitPlayer: n => damage(n, 'ゾンビにやられた'),
+      onVoice: type => Snd.mob(type),
     });
     spawnT += dt;
     if (spawnT > 3) { spawnT = 0; if (mode === 'survival') mobs.trySpawnHostile(player.pos, isNight()); }
@@ -1213,7 +1318,7 @@ function loop(now) {
 // 開発用フック（コンソールから中身を覗ける）
 window.BLOCKWILD = {
   THREE, scene, camera, renderer, chunks, player, W3, matSolid, matAlpha, atlas, mobs, particles,
-  changeBlock, toast, focus, raycastVoxel, give, doCraft, mineBlock, placeBlock, canHarvest, breakSeconds,
+  changeBlock, toast, focus, raycastVoxel, give, doCraft, mineBlock, placeBlock, canHarvest, breakSeconds, keys, settings,
   setTime: v => { time = v; },
   get state() { return { mode, playing, ready, sel, hotbar, inv, time, dayLight, pending: pending.size }; },
 };
@@ -1222,6 +1327,7 @@ window.BLOCKWILD = {
 // 起動
 // ---------------------------------------------------------------------------
 applyMode('creative');
+applyButtons();
 updateVitals();
 requestAnimationFrame(loop);
 createWorld(seed).then(() => { if (Save.hasLocal()) hint('前回の世界は「再開」から戻せる', false); });

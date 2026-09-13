@@ -28,6 +28,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 kbd{font:11px/1 ui-monospace,monospace;border:1px solid #ffffff4d;border-bottom-width:2px;border-radius:4px;padding:3px 5px;margin:0 1px;background:#ffffff14}
 
 #game{position:fixed;inset:0;width:100%;height:100%;touch-action:none;display:block}
+body.freelook #game{cursor:crosshair}
 #shade{position:fixed;inset:0;pointer-events:none;z-index:1;
   background:radial-gradient(ellipse at center,#0000 45%,#00000070 130%),linear-gradient(#0f242840,#0000 22%,#0000 70%,#08181866)}
 #flash{position:fixed;inset:0;pointer-events:none;z-index:2;opacity:0;background:radial-gradient(ellipse at center,#f003 40%,#c00000a6 140%);transition:opacity .25s}
@@ -83,6 +84,7 @@ body.aiming #cross{opacity:1;transform:scale(1.15)}
 .keyhelp{display:flex;justify-content:center;flex-wrap:wrap;gap:6px 14px;font-size:11px;margin-top:12px;color:#ffffff9c}
 body.playing #info{opacity:.85}
 body.touch .keyhelp{display:none}
+body.freelook #cross{box-shadow:0 0 0 2px #d9f78f55;border-radius:50%}
 
 #toast{position:fixed;left:50%;bottom:calc(max(14px,env(safe-area-inset-bottom)) + 190px);transform:translateX(-50%);z-index:4;
   padding:10px 18px;border-radius:999px;background:#0d1c1eed;border:1px solid var(--line);font-size:13px;opacity:0;transition:opacity .3s,transform .3s;pointer-events:none;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis}
@@ -93,13 +95,37 @@ body.touch .keyhelp{display:none}
 
 /* ---- タッチ操作 ---- */
 #touch{display:none}
-body.touch #touch{display:block}
+body.touch #touch,body.buttons #touch{display:block}
 #stick{position:fixed;left:calc(var(--pad) + 4px);bottom:calc(max(14px,env(safe-area-inset-bottom)) + 20px);width:132px;height:132px;border-radius:50%;
   border:1px solid var(--line);background:#0d1c1e73;z-index:4;touch-action:none;backdrop-filter:blur(6px)}
 #stickKnob{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px;border-radius:50%;background:#d9f78f5c;border:1px solid #ffffff6b}
-#touch .actions{position:fixed;right:calc(var(--pad) + 6px);bottom:calc(max(14px,env(safe-area-inset-bottom)) + 20px);display:grid;grid-template-columns:repeat(2,84px);gap:8px;z-index:4}
-#touch .actions button{height:54px;border-radius:14px;font-size:13px}
-body.touch #bottom{width:min(680px,96vw);bottom:calc(max(14px,env(safe-area-inset-bottom)) + 168px)}
+#touch .actions{position:fixed;right:calc(var(--pad) + 4px);bottom:calc(max(14px,env(safe-area-inset-bottom)) + 16px);
+  display:grid;grid-template-columns:repeat(2,96px);gap:8px;z-index:4}
+#touch .actions button{height:62px;border-radius:16px;font-size:19px;line-height:1.15;display:grid;place-items:center;gap:1px;
+  background:#13262899;border-color:#ffffff3d}
+#touch .actions button span{font-size:11px;letter-spacing:1px;opacity:.85}
+#touch .actions button:active{background:#d9f78f33;border-color:var(--accent)}
+#touch .actions .big{background:#1b3330b8}
+#touch .actions .wide{grid-column:span 2;height:46px;font-size:15px}
+#touchMine:active,#touchPlace:active{transform:scale(.96)}
+/* スマホ：ホットバーは一番下、操作は左右のその上に置く */
+body.touch #bottom{width:min(680px,96vw);bottom:max(10px,env(safe-area-inset-bottom))}
+body.touch #stick{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 112px)}
+body.touch #touch .actions{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 112px)}
+body.touch #toast{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 300px)}
+body.touch #hint{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 334px)}
+
+/* PC で画面ボタンを出したときは、ホットバーの上に一列のツールバーとして並べる */
+body.buttons .keyhelp{display:none}
+body.buttons #touch .actions{
+  left:0;right:0;transform:none;
+  bottom:calc(max(14px,env(safe-area-inset-bottom)) + 124px);
+  display:flex;gap:8px;flex-wrap:wrap;justify-content:center;padding:0 12px}
+body.buttons #touch .actions button{width:86px;height:56px}
+body.buttons #touch .actions .wide{width:164px}
+body.buttons #stick{width:118px;height:118px;bottom:calc(max(14px,env(safe-area-inset-bottom)) + 14px)}
+body.buttons #toast{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 210px)}
+body.buttons #hint{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 246px)}
 
 /* ---- オーバーレイ共通 ---- */
 .overlay{position:fixed;inset:0;z-index:6;display:flex;align-items:center;padding:clamp(24px,7vw,90px);
@@ -180,11 +206,14 @@ h1{font-size:clamp(40px,5.4vw,74px);line-height:1.12;letter-spacing:-2.5px;margi
   #target{top:calc(50% + 26px);font-size:11px}
   #toast{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 250px);font-size:12px;padding:8px 14px}
   #hint{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 286px);font-size:11px}
-  #stick{width:112px;height:112px}
-  #stickKnob{width:46px;height:46px;margin:-23px}
-  #touch .actions{grid-template-columns:repeat(2,72px);gap:6px}
-  #touch .actions button{height:46px;font-size:12px}
-  body.touch #bottom{bottom:calc(max(14px,env(safe-area-inset-bottom)) + 150px)}
+  #stick{width:104px;height:104px}
+  #stickKnob{width:44px;height:44px;margin:-22px}
+  #touch .actions{grid-template-columns:repeat(2,78px);gap:6px}
+  #touch .actions button{height:50px;font-size:16px}
+  #touch .actions button span{font-size:10px}
+  #touch .actions .wide{height:40px;font-size:13px}
+  body.touch #stick{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 96px)}
+  body.touch #touch .actions{bottom:calc(max(10px,env(safe-area-inset-bottom)) + 96px)}
   .overlay{padding:20px 16px}
   h1{font-size:34px;letter-spacing:-1.5px;margin:14px 0}
   .menucontent p{font-size:13px;line-height:1.8;margin-bottom:18px}

@@ -1,12 +1,31 @@
 // entities.js — 生き物とパーティクル
 import * as THREE from '../three.module.js';
-import { W, SEA, surface, getBlock, isSolid } from './world.js';
+import { W, H, SEA, surface, getBlock, isSolid } from './world.js';
 import { ID, IT } from './blocks.js';
+
+const clampN = (v, a, b) => v < a ? a : v > b ? b : v;
 
 const box = (w, h, d, color, x, y, z, parent) => {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
   m.position.set(x, y, z); parent.add(m); return m;
 };
+
+// 脚は「付け根」で回すためのグループを作る。中心で回すと膝から折れたように見える。
+const limb = (w, h, d, color, x, hipY, z, parent) => {
+  const g = new THREE.Group();
+  g.position.set(x, hipY, z);
+  parent.add(g);
+  box(w, h, d, color, 0, -h / 2, 0, g);
+  return g;
+};
+
+// その座標で立てる高さ（足元のブロックの上面）。y から下へ探す。
+function groundAt(x, z, fromY) {
+  const bx = Math.floor(x), bz = Math.floor(z);
+  const top = Math.min(H - 1, Math.floor(fromY) + 1);
+  for (let y = top; y >= 0; y--) if (isSolid(getBlock(bx, y, bz))) return y + 1;
+  return -1;
+}
 
 export const MOB = {
   pig:     { name: 'ブタ', hp: 10, body: '#e8a39a', legs: '#c98a82', speed: 1.1, drop: IT.MEAT },
@@ -18,22 +37,22 @@ export const MOB = {
 
 function buildMob(type) {
   const g = new THREE.Group(), d = MOB[type];
-  const parts = { legs: [], head: null };
+  const parts = { legs: [], arms: [], head: null };
   if (type === 'chicken') {
     box(.5, .45, .34, d.body, 0, .55, 0, g);
     parts.head = box(.26, .26, .24, d.body, .28, .82, 0, g);
     box(.1, .08, .08, '#e0a83c', .44, .8, 0, parts.head);
     box(.06, .2, .28, '#ffffff', -.2, .6, .18, g);
     box(.06, .2, .28, '#ffffff', -.2, .6, -.18, g);
-    for (const z of [-.11, .11]) parts.legs.push(box(.08, .32, .08, d.legs, 0, .23, z, g));
+    for (const z of [-.11, .11]) parts.legs.push(limb(.08, .32, .08, d.legs, 0, .4, z, g));
     box(.22, .16, .04, '#c8443c', .28, .95, 0, g);
   } else if (type === 'zombie') {
     box(.62, .86, .34, d.body, 0, 1.18, 0, g);
     parts.head = box(.52, .5, .5, '#6f9b6b', 0, 1.86, 0, g);
     box(.1, .1, .04, '#20301f', .14, 1.9, .26, parts.head);
     box(.1, .1, .04, '#20301f', -.14, 1.9, .26, parts.head);
-    for (const x of [-.42, .42]) { const a = box(.22, .74, .24, '#5f8a60', x, 1.32, .16, g); a.rotation.x = -1.35; parts.legs.push(a); }
-    for (const x of [-.16, .16]) parts.legs.push(box(.24, .76, .24, d.legs, x, .38, 0, g));
+    for (const x of [-.42, .42]) { const a = limb(.22, .74, .24, '#5f8a60', x, 1.55, .1, g); a.rotation.x = -1.4; parts.arms.push(a); }
+    for (const x of [-.16, .16]) parts.legs.push(limb(.24, .76, .24, d.legs, x, .78, 0, g));
   } else {
     const w = type === 'cow' ? 1.28 : 1.1, hgt = type === 'cow' ? .82 : .72;
     box(w, hgt, .68, d.body, 0, .86, 0, g);
@@ -43,7 +62,7 @@ function buildMob(type) {
     if (type === 'cow') { box(.12, .12, .12, '#e8e2d2', w * .58 + .1, 1.24, .2, parts.head); box(.12, .12, .12, '#e8e2d2', w * .58 + .1, 1.24, -.2, parts.head); box(.3, .2, .3, '#e9dfd0', w * .58 + .2, .92, 0, parts.head); }
     if (type === 'pig') box(.18, .16, .24, '#d98c86', w * .58 + .22, .98, 0, parts.head);
     if (type === 'sheep') { box(1.2, .8, .76, '#f6f3ea', 0, .9, 0, g); box(.44, .44, .42, '#d8cdb8', w * .58, 1.02, 0, g); }
-    for (const a of [-.38, .38]) for (const b of [-.22, .22]) parts.legs.push(box(.2, .5, .2, d.legs, a, .28, b, g));
+    for (const a of [-.38, .38]) for (const b of [-.22, .22]) parts.legs.push(limb(.2, .5, .2, d.legs, a, .54, b, g));
   }
   g.traverse(o => { if (o.isMesh) o.castShadow = false; });
   return { g, parts };
@@ -56,7 +75,13 @@ export class Mobs {
   spawn(type, x, y, z) {
     const { g, parts } = buildMob(type);
     g.position.set(x, y, z);
-    const m = { type, g, parts, def: MOB[type], hp: MOB[type].hp, angle: Math.random() * 6.28, t: Math.random() * 10, vy: 0, walk: 0, idle: Math.random() * 4, hurt: 0, atk: 0 };
+    const angle = Math.random() * 6.28;
+    const m = {
+      type, g, parts, def: MOB[type], hp: MOB[type].hp,
+      angle, target: angle, t: Math.random() * 10, vy: 0, walkT: 0,
+      idle: Math.random() * 4, walking: false, hurt: 0, atk: 0, flee: 0,
+      voice: 4 + Math.random() * 20,
+    };
     this.scene.add(g); this.list.push(m);
     return m;
   }
@@ -96,51 +121,84 @@ export class Mobs {
     const { player, night, survival, hitPlayer } = ctx;
     for (let i = this.list.length - 1; i >= 0; i--) {
       const m = this.list[i];
-      m.t += dt; m.hurt = Math.max(0, m.hurt - dt); m.atk = Math.max(0, m.atk - dt);
+      m.t += dt;
+      m.hurt = Math.max(0, m.hurt - dt);
+      m.atk = Math.max(0, m.atk - dt);
       const hostile = m.def.hostile;
+      const pos = m.g.position;
 
-      if (hostile && !night) { // 朝日で消える
+      if (hostile && !night) {                       // 朝日を浴びて消えていく
         m.g.scale.multiplyScalar(1 - dt * 2.2);
         if (m.g.scale.x < .15) { this.scene.remove(m.g); this.list.splice(i, 1); }
         continue;
       }
 
-      const dx = player.x - m.g.position.x, dz = player.z - m.g.position.z;
+      const dx = player.x - pos.x, dz = player.z - pos.z;
       const dist = Math.hypot(dx, dz);
-      let moving = false, speed = m.def.speed;
+      let want = false, speed = m.def.speed;
 
-      if (hostile && dist < 22 && survival) {
-        m.angle = Math.atan2(dz, dx);
-        moving = dist > 1.2;
+      if (m.flee > 0) {                              // 殴られたら少し逃げる
+        m.flee -= dt; want = true; speed *= 1.7;
+      } else if (hostile && survival && dist < 22) {
+        m.target = Math.atan2(dz, dx);
+        want = dist > 1.1;
         speed *= 1.15;
-        if (dist < 1.7 && Math.abs(player.y - m.g.position.y) < 2.2 && m.atk <= 0) { hitPlayer(4); m.atk = 1.1; }
+        if (dist < 1.8 && Math.abs(player.y - pos.y) < 2.4 && m.atk <= 0) { hitPlayer(4); m.atk = 1.1; }
       } else {
         m.idle -= dt;
-        if (m.idle <= 0) { m.idle = 2 + Math.random() * 5; m.angle += (Math.random() - .5) * 3; m.state = Math.random() > .35; }
-        moving = m.state;
+        if (m.idle <= 0) {                           // ときどき向きを変えて、歩いたり止まったり
+          m.idle = 2.5 + Math.random() * 5;
+          m.walking = Math.random() > .35;
+          if (m.walking) m.target = m.angle + (Math.random() - .5) * 2.4;
+        }
+        want = m.walking;
       }
 
-      if (moving) {
-        const nx = m.g.position.x + Math.cos(m.angle) * speed * dt;
-        const nz = m.g.position.z + Math.sin(m.angle) * speed * dt;
-        const fx = Math.floor(nx), fz = Math.floor(nz);
-        const h = surface(fx, fz);
-        const blocked = nx < 2 || nz < 2 || nx > W - 2 || nz > W - 2 || h <= SEA - 1 || h + 1 - m.g.position.y > 1.3;
-        if (blocked) { m.angle += 2.1; moving = false; }
-        else {
-          m.g.position.x = nx; m.g.position.z = nz;
-          m.g.position.y += (h + 1 - m.g.position.y) * Math.min(1, dt * 9);
-          m.walk += dt * speed * 6.5;
+      // 向きはなめらかに回す（その場でくるっと向き直らない）
+      let da = ((m.target - m.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      m.angle += clampN(da, -dt * 3.4, dt * 3.4);
+
+      // 足元の地面。葉や幹の上には登らない（1ブロックの段差までしか上がらない）
+      let moved = false;
+      if (want) {
+        const nx = pos.x + Math.cos(m.angle) * speed * dt;
+        const nz = pos.z + Math.sin(m.angle) * speed * dt;
+        const g = groundAt(nx, nz, pos.y + .6);
+        const headFree = !isSolid(getBlock(Math.floor(nx), Math.floor(pos.y) + 1, Math.floor(nz)));
+        const inBounds = nx > 2 && nz > 2 && nx < W - 2 && nz < W - 2;
+        if (inBounds && headFree && g >= 0 && g > SEA - 1 && g - pos.y <= 1.05 && pos.y - g < 4) {
+          pos.x = nx; pos.z = nz; moved = true;
+          m.walkT += dt * speed * 6.2;
+        } else {
+          m.target = m.angle + 1.6 + Math.random();  // 行き止まりなら向きを変える
+          m.idle = Math.min(m.idle, .6);
         }
       }
-      m.g.rotation.y = -m.angle + Math.PI / 2;
-      const swing = moving ? Math.sin(m.walk) * .55 : 0;
-      m.parts.legs.forEach((l, k) => {
-        if (hostile && k < 2) { l.rotation.x = -1.35 + Math.sin(m.walk) * .2; return; }
-        l.rotation.x = swing * (k % 2 ? 1 : -1);
-      });
-      if (m.parts.head && !hostile) m.parts.head.rotation.z = Math.sin(m.t * .8) * .06;
-      m.g.children.forEach(c => { if (c.material) c.material.emissive?.setScalar(m.hurt > 0 ? .45 : 0); });
+
+      // 落下と着地
+      const gy = groundAt(pos.x, pos.z, pos.y + .6);
+      if (gy >= 0 && pos.y > gy + .02) {
+        m.vy -= dt * 22;
+        pos.y = Math.max(gy, pos.y + m.vy * dt);
+        if (pos.y <= gy) { pos.y = gy; m.vy = 0; }
+      } else if (gy >= 0) {
+        pos.y += (gy - pos.y) * Math.min(1, dt * 12);
+        m.vy = 0;
+      }
+
+      m.g.rotation.y = -m.angle;                     // 体の正面(+X)を進行方向へ
+      const swing = moved ? Math.sin(m.walkT) * .62 : Math.sin(m.t * 1.4) * .03;
+      m.parts.legs.forEach((l, k) => { l.rotation.x = swing * (k % 2 ? 1 : -1); });
+      m.parts.arms.forEach((a, k) => { a.rotation.x = -1.4 + Math.sin(m.walkT) * .18 * (k ? 1 : -1); });
+      if (m.parts.head) {
+        m.parts.head.rotation.y = hostile ? 0 : Math.sin(m.t * .55) * .28;
+        m.parts.head.rotation.z = Math.sin(m.t * .9) * .05;
+      }
+      m.g.traverse(o => { if (o.isMesh && o.material.emissive) o.material.emissive.setScalar(m.hurt > 0 ? .5 : 0); });
+
+      // ときどき鳴く
+      m.voice -= dt;
+      if (m.voice <= 0) { m.voice = 9 + Math.random() * 22; if (dist < 24 && ctx.voice !== false) ctx.onVoice?.(m.type); }
     }
   }
 
@@ -157,9 +215,14 @@ export class Mobs {
     return best;
   }
 
-  damage(m, dmg, onDrop) {
-    m.hp -= dmg; m.hurt = .3;
-    m.angle = Math.atan2(m.g.position.z - (m.lastHitZ ?? 0), m.g.position.x - (m.lastHitX ?? 0));
+  damage(m, dmg, from, onDrop) {
+    m.hp -= dmg;
+    m.hurt = .3;
+    if (from) {                       // 殴られた方向と逆へ逃げる
+      m.target = Math.atan2(m.g.position.z - from.z, m.g.position.x - from.x);
+      m.flee = m.def.hostile ? 0 : 2.6;
+      m.walking = true;
+    }
     if (m.hp <= 0) {
       const i = this.list.indexOf(m);
       if (i >= 0) this.list.splice(i, 1);
