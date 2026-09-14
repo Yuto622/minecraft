@@ -9,7 +9,8 @@ import { W, H, SEA, CH, CX, getBlock, setRaw, getMeta, setMeta, relight, relight
 import { generate, setSeed, findSpawn, biomeName, biomeTint, villages } from './src/worldgen.js';
 import { buildChunk, blockBoxes } from './src/mesher.js';
 import { voxelMaterial, makeSky } from './src/shaders.js';
-import { Mobs, Particles, Arrows } from './src/entities.js';
+import { Mobs, Particles, Arrows, RemoteMobs } from './src/entities.js';
+import { Net } from './src/net.js';
 import { Inventory, SLOTS, HOTBAR, maxStack, findRecipe, craftOnce, recipes, fuels, smelting } from './src/inventory.js';
 import { Drops } from './src/drops.js';
 import * as Snd from './src/audio.js';
@@ -241,6 +242,8 @@ function setCrackStage(n) {
   crackMat.needsUpdate = true;
 }
 
+const heldId = () => bag.get(sel)?.id || 0;
+
 // 手に持っている物が光るか（松明・ランタン・グロウストーン・溶岩バケツ）
 function heldLightLevel() {
   const st = bag.get(sel);
@@ -250,8 +253,8 @@ function heldLightLevel() {
   return e ? e / 15 * .85 : 0;
 }
 
-// 三人称で見えるプレイヤーの姿
-const avatar = (() => {
+// プレイヤーの姿（自分の三人称用にも、友達の表示にも使う）
+function makeAvatar(shirt = '#3c6aa8', pants = '#2f4a78') {
   const g = new THREE.Group();
   const box = (w, h, d, color, x, y, z, parent) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
@@ -261,17 +264,40 @@ const avatar = (() => {
     const p = new THREE.Group(); p.position.set(x, hipY, z); g.add(p);
     box(w, h, d, color, 0, -h / 2, 0, p); return p;
   };
-  const body = box(.52, .72, .28, '#3c6aa8', 0, 1.1, 0, g);
+  const body = box(.52, .72, .28, shirt, 0, 1.1, 0, g);
   const head = box(.46, .46, .46, '#c98f6a', 0, 1.68, 0, g);
   box(.09, .09, .03, '#2a2622', .12, 1.72, .24, head);
   box(.09, .09, .03, '#2a2622', -.12, 1.72, .24, head);
   box(.48, .2, .48, '#4a3526', 0, 1.86, 0, head);
   const arms = [limb(.18, .68, .22, '#c98f6a', .35, 1.44, 0), limb(.18, .68, .22, '#c98f6a', -.35, 1.44, 0)];
-  const legs = [limb(.2, .76, .24, '#2f4a78', .13, .76, 0), limb(.2, .76, .24, '#2f4a78', -.13, .76, 0)];
-  g.visible = false;
-  scene.add(g);
+  const legs = [limb(.2, .76, .24, pants, .13, .76, 0), limb(.2, .76, .24, pants, -.13, .76, 0)];
   return Object.assign(g, { head, body, arms, legs });
-})();
+}
+
+// 名前の札（頭の上に浮かぶ）
+function makeLabel(text) {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 64;
+  const ctx = cv.getContext('2d');
+  ctx.font = 'bold 34px "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const w = Math.min(250, ctx.measureText(text).width + 28);
+  ctx.fillStyle = 'rgba(10,20,22,.72)';
+  ctx.beginPath(); ctx.roundRect((256 - w) / 2, 12, w, 40, 10); ctx.fill();
+  ctx.fillStyle = '#eaf3ee';
+  ctx.fillText(text, 128, 33);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, sizeAttenuation: true }));
+  sp.scale.set(2.2, .55, 1);
+  sp.position.y = 2.35;
+  sp.renderOrder = 5;
+  return sp;
+}
+
+const avatar = makeAvatar();
+avatar.visible = false;
+scene.add(avatar);
 
 // 手に持っているもの。
 // 本編とは別のシーン・別の画角で最後に重ねて描くので、画面の端でも歪まない。
@@ -584,6 +610,7 @@ const soundMat = id => {
 
 // ブロックを書き換えて、光とメッシュを更新する
 function changeBlock(x, y, z, id, meta = 0) {
+  if (online() && !applyingRemote) net.send({ t: 'block', x, y, z, id, m: meta });
   const old = getBlock(x, y, z);
   const radius = W3.autoRadius(x, y, z, old, id);
   setRaw(x, y, z, id, meta);
@@ -1497,6 +1524,7 @@ function interact(hit) {
       spawnPoint = [hit.x + .5, hit.y + 1.05, hit.z + .5];
       advance('sleep');
       for (const mo of [...mobs.list]) if (mo.def.hostile) mobs.damage(mo, 999, null, () => {});
+      if (online()) net.send({ t: 'time', sleep: 1 });
       toast('ぐっすり眠った。朝になった');
       updateVitals();
       return true;
@@ -1522,6 +1550,7 @@ const ADVANCEMENTS = {
   boom: ['生き延びた', 'クリーパーの爆発から逃れた'],
   swim: ['深く潜る', '水の底まで行った'],
   build: ['建築家', 'ブロックを 200 個置いた'],
+  together: ['ひとりじゃない', '友達と同じ世界に立った'],
 };
 const earned = new Set();
 let advT;
@@ -1549,6 +1578,8 @@ function chatLog(msg) {
 }
 function openChat() {
   if (!playing) return;
+  $('chatbar').firstElementChild.textContent = online() ? '💬' : '/';
+  $('chatInput').placeholder = online() ? 'みんなに話す（/ でコマンド）' : 'コマンド（help で一覧）';
   playing = false;
   document.exitPointerLock?.();
   $('chatbar').classList.remove('hidden');
@@ -1669,6 +1700,153 @@ function drawMinimap() {
   mmCtx.fillStyle = '#d9f78f';
   mmCtx.beginPath(); mmCtx.moveTo(0, -7); mmCtx.lineTo(5, 6); mmCtx.lineTo(0, 3); mmCtx.lineTo(-5, 6); mmCtx.closePath(); mmCtx.fill();
   mmCtx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// マルチプレイ
+// ---------------------------------------------------------------------------
+const net = new Net();
+const netMobs = new RemoteMobs(scene);
+const friends = new Map();            // id -> {group, label, name, held}
+const SHIRTS = ['#3c6aa8', '#a8453c', '#3f8a4e', '#8a5ba8', '#c08a2a', '#2f8f96', '#b05a8a', '#5a6a8f'];
+const online = () => net.connected;
+
+function friendFor(id, name) {
+  let f = friends.get(id);
+  if (f) return f;
+  const g = makeAvatar(SHIRTS[id % SHIRTS.length], '#2f3a4a');
+  const label = makeLabel(name || '…');
+  g.add(label);
+  scene.add(g);
+  f = { id, g, label, name, bob: 0 };
+  friends.set(id, f);
+  return f;
+}
+function dropFriend(id) {
+  const f = friends.get(id);
+  if (!f) return;
+  scene.remove(f.g);
+  friends.delete(id);
+}
+function updateFriends(dt) {
+  for (const p of net.players.values()) {
+    const f = friendFor(p.id, p.name);
+    if (p.name && f.name !== p.name) {                 // 名前が後から届いたら札を作り直す
+      f.g.remove(f.label);
+      f.label = makeLabel(p.name);
+      f.g.add(f.label);
+      f.name = p.name;
+    }
+    const k = Math.min(1, dt * 12);
+    p.x += (p.tx - p.x) * k; p.y += (p.ty - p.y) * k; p.z += (p.tz - p.z) * k;
+    f.g.position.set(p.x, p.y, p.z);
+    f.g.rotation.y = -(p.tyaw || 0) + Math.PI;
+    const moving = Math.hypot(p.tx - f.g.position.x, p.tz - f.g.position.z) > .004 || (p.f & 2);
+    f.bob += dt * ((p.f & 2) ? 11 : 8) * (moving ? 1 : 0);
+    const sw = moving ? Math.sin(f.bob) * .6 : 0;
+    f.g.legs.forEach((l, i) => { l.rotation.x = sw * (i ? 1 : -1); });
+    f.g.arms.forEach((a, i) => { a.rotation.x = -sw * (i ? 1 : -1) + ((p.f & 8) ? -1.2 : 0); });
+    f.g.head.rotation.x = p.pitch || 0;
+    f.g.body.position.y = (p.f & 1) ? .95 : 1.1;
+  }
+  for (const id of friends.keys()) if (!net.players.has(id)) dropFriend(id);
+}
+
+function netSetup() {
+  net.on.block = m => { applyRemoteBlock(m.x, m.y, m.z, m.id, m.m); };
+  net.on.boom = m => {
+    Snd.explode();
+    particles.burst(m.x - .5, m.y - .5, m.z - .5, '#3a3a3a', 40, 2.4);
+    particles.burst(m.x - .5, m.y - .5, m.z - .5, '#ffb45a', 18, 2.8);
+    for (const [x, y, z, id, mm] of m.blocks) applyRemoteBlock(x, y, z, id, mm);
+  };
+  net.on.chat = m => { chatLog(m.from + '：' + m.text); Snd.ui(); };
+  net.on.sys = t => chatLog(typeof t === 'string' ? t : t.text);
+  net.on.time = m => { time = m.time; weather = m.weather; weatherT = 600; };
+  net.on.weather = m => { weather = m.weather; weatherT = 600; };
+  net.on.hurt = m => damage(m.dmg, m.from);
+  net.on.mobs = m => {
+    netMobs.sync(m.a);
+    const ids = new Set(m.a.map(r => r[0]));
+    for (const r of m.a) if (!netMobs.map.has(r[0])) net.send({ t: 'needmob', id: r[0] });   // 近づいた生き物
+    for (const id of [...netMobs.map.keys()]) if (!ids.has(id)) netMobs.remove(id);          // 遠ざかった
+  };
+  net.on.mobdead = m => {
+    const mo = netMobs.remove(m.id);
+    if (!mo) return;
+    Snd.mob(mo.type);
+    particles.burst(mo.g.position.x - .4, mo.g.position.y + .4, mo.g.position.z - .4, '#c0503f', 8, .7);
+    if (m.by === net.id && mode === 'survival' && mo.def.drop) give(mo.def.drop, 1 + Math.floor(Math.random() * 2));
+  };
+  net.on.mobhurt = m => { const mo = netMobs.map.get(m.id); if (mo) mo.hurt = .3; };
+  net.on.mobspawn = m => netMobs.add(m.id, m.type, m.x, m.y, m.z);
+  net.on.leave = id => dropFriend(id);
+  net.on.roster = () => { updateOnlineTag(); if (!$('menu').classList.contains('hidden')) updateNetPanel(); };
+  net.on.close = () => {
+    netMobs.clear();
+    for (const id of [...friends.keys()]) dropFriend(id);
+    mobs.populate();
+    toast('サーバーとの接続が切れた');
+    chatLog('接続が切れました。メニューからつなぎ直せます');
+    updateNetPanel();
+  };
+}
+netSetup();
+
+// サーバーから来たブロック変更（送り返さない）
+let applyingRemote = false;
+function applyRemoteBlock(x, y, z, id, m) {
+  applyingRemote = true;
+  changeBlock(x, y, z, id, m || 0);
+  applyingRemote = false;
+}
+
+async function joinServer(url, name) {
+  $('netStatus').textContent = 'つないでいます…';
+  try {
+    const w = await net.connect(url, name);
+    localStorage.setItem('blockwild-name', name);
+    localStorage.setItem('blockwild-server', url);
+    showLoading('みんなの世界を読み込んでいます');
+    await gap();
+    await createWorld(w.seed, w.delta, true);
+    time = w.time; weather = w.weather; weatherT = 600;
+    player.pos.set(w.spawn[0], w.spawn[1], w.spawn[2]);
+    player.vel.set(0, 0, 0);
+    unstick();
+    mobs.clear();                                   // 生き物はサーバーのものを使う
+    netMobs.clear();
+    for (const [id, type, x, y, z, a] of w.mobs) netMobs.add(id, type, x, y, z, a);
+    for (const p of net.players.values()) friendFor(p.id, p.name);
+    updateNetPanel();
+    chatLog('サーバーに参加しました。T または / で会話できます');
+    advance('together');
+    start();
+    return true;
+  } catch (e) {
+    $('netStatus').textContent = 'つなげませんでした（' + (e.message || e) + '）';
+    net.close();
+    updateNetPanel();
+    return false;
+  }
+}
+
+function updateOnlineTag() {
+  const el = $('onlineTag');
+  const on = online();
+  el.classList.toggle('hidden', !on);
+  if (on) el.textContent = '● ' + (net.players.size + 1) + '人';
+}
+
+function updateNetPanel() {
+  updateOnlineTag();
+  const on = online();
+  $('netJoin').textContent = on ? '切断する' : 'このサーバーに参加';
+  $('netPanel').classList.toggle('on', on);
+  if (on) {
+    const names = [net.name + '（あなた）', ...[...net.players.values()].map(p => p.name)];
+    $('netStatus').innerHTML = '<b>接続中</b> · ' + names.length + ' 人：' + names.join('、');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2162,6 +2340,29 @@ function rightClick() {
 function tryAttack() {
   camera.getWorldDirection(dir);
   const o = camera.getWorldPosition(new THREE.Vector3());
+  if (online()) {
+    const rm = netMobs.pick(o, dir, 4);
+    if (rm && (!hit || hit.dist > o.distanceTo(rm.g.position) - .6)) {
+      const t = currentTool();
+      net.send({ t: 'mobhit', id: rm.id, dmg: t?.dmg || (t ? 2 : 1.5) });
+      rm.hurt = .3;
+      Snd.hit(); swing();
+      if (t) damageTool(1);
+      mining = false;
+      return true;
+    }
+    for (const p of net.players.values()) {           // 友達を殴る
+      const d = Math.hypot(p.x - o.x, p.y + 1 - o.y, p.z - o.z);
+      if (d > 3.6) continue;
+      const to = new THREE.Vector3(p.x - o.x, p.y + 1 - o.y, p.z - o.z);
+      if (to.clone().normalize().dot(dir) < .93) continue;
+      const t = currentTool();
+      net.send({ t: 'pvp', id: p.id, dmg: t?.dmg || 1.5 });
+      Snd.hit(); swing();
+      mining = false;
+      return true;
+    }
+  }
   const m = mobs.pick(o, dir, 4);
   if (m && (!hit || hit.dist > o.distanceTo(m.g.position) - .6)) { attack(m); mining = false; return true; }
   if (mode === 'creative' && hit) { mineBlock(hit); swing(); progress = 0; hit = null; return true; }
@@ -2248,6 +2449,21 @@ function applyMode(m, keepBar = false) {
   }
   updateHotbar(); updateVitals();
 }
+
+// マルチプレイの操作
+$('netName').value = localStorage.getItem('blockwild-name') || '';
+$('netURL').value = localStorage.getItem('blockwild-server') || Net.defaultURL();
+$('netJoin').onclick = async () => {
+  if (online()) { net.close(); netMobs.clear(); for (const id of [...friends.keys()]) dropFriend(id); mobs.populate(); updateNetPanel(); $('netStatus').textContent = '切断しました'; return; }
+  const name = ($('netName').value || '').trim().slice(0, 16) || 'ぼうけんしゃ';
+  $('netName').value = name;
+  const url = ($('netURL').value || '').trim() || Net.defaultURL();
+  $('netJoin').disabled = true;
+  await joinServer(url, name);
+  $('netJoin').disabled = false;
+};
+$('netURL').addEventListener('keydown', e => { if (e.key === 'Enter') $('netJoin').click(); });
+$('netName').addEventListener('keydown', e => { if (e.key === 'Enter') $('netJoin').click(); });
 
 $('play').onclick = () => start();
 $('menuButton').onclick = () => (playing ? pause() : start());
@@ -2482,7 +2698,7 @@ async function buildNear(radius, fromP) {
   }
 }
 
-async function createWorld(newSeed) {
+async function createWorld(newSeed, deltaBytes, multi) {
   showLoading('大地を持ち上げています');
   setProgress(0);
   await gap();
@@ -2495,11 +2711,21 @@ async function createWorld(newSeed) {
     setProgress(value.p, value.msg);
     await gap();
   }
+  if (deltaBytes && deltaBytes.length > 1) {        // みんなが変えたぶんを反映
+    setProgress(.89, 'みんなが作ったものを重ねています');
+    await gap();
+    const dv = new DataView(deltaBytes.buffer, deltaBytes.byteOffset, deltaBytes.byteLength);
+    for (let o = 1; o + 5 < deltaBytes.length; o += 6) {
+      const i = dv.getUint32(o, true);
+      const y = Math.floor(i / (W * W)), z = Math.floor((i % (W * W)) / W), x = i % W;
+      setRaw(x, y, z, deltaBytes[o + 4], deltaBytes[o + 5]);
+    }
+  }
   setProgress(.9, '光を通しています');
   await gap();
   relightAll();
   const s = findSpawn();
-  if (villages.length) {                              // 村が見える距離から始める
+  if (villages.length && !multi) {                              // 村が見える距離から始める
     const v = villages[0];
     const x = clamp(v.x + 26, 4, W - 4), z = clamp(v.z + 26, 4, W - 4);
     const y = surface(x, z);
@@ -2512,8 +2738,8 @@ async function createWorld(newSeed) {
   player.pitch = -.1;
   player.health = 20; player.food = 20; player.air = 10;
   time = 300;
-  mobs.populate();
-  spawnVillagers();
+  if (!multi) { mobs.populate(); spawnVillagers(); }
+  else mobs.clear();
   stockVillageChests();
   rebuildAll();
   await buildNear(3.2, .92);
@@ -2595,7 +2821,7 @@ function loop(now) {
     updatePlayer(dt);
     hit = raycastVoxel(mode === 'creative' ? 7 : 5.5);
     updateMining(dt);
-    mobs.update(dt, {
+    if (!online()) mobs.update(dt, {
       player: player.pos, night: isNight(), survival: mode === 'survival',
       hitPlayer: n => damage(n, 'ゾンビにやられた'),
       onVoice: type => (type === 'fuse' ? Snd.fuse() : Snd.mob(type)),
@@ -2620,6 +2846,10 @@ function loop(now) {
       if (left < n) { Snd.pickup(); updateHotbar(); if (bagOpen) renderScreen(); }
       return left;
     });
+    if (online()) {
+      const flags = (player.sneak ? 1 : 0) | (player.sprint ? 2 : 0) | (player.fly ? 4 : 0) | (swingT > 0 ? 8 : 0);
+      net.sendPos(player.pos && { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw, pitch: player.pitch }, heldId(), Math.round(player.health), flags, now);
+    }
     updateBlockPhysics(dt);
     updateCrops(dt);
     fluidT += dt;
@@ -2628,7 +2858,7 @@ function loop(now) {
     furnaceT += dt;
     if (furnaceT > .25) { updateFurnaces(furnaceT); furnaceT = 0; }
     spawnT += dt;
-    if (spawnT > 3) { spawnT = 0; if (mode === 'survival') mobs.trySpawnHostile(player.pos, isNight()); }
+    if (spawnT > 3) { spawnT = 0; if (mode === 'survival' && !online()) mobs.trySpawnHostile(player.pos, isNight()); }
     if (isNight() && mode === 'survival') hint('夜になった。明かりを灯すか、家をつくって朝を待とう');
     if (player.pos.y < 20) advance('cave');
     if (player.pos.y > 45) advance('peak');
@@ -2648,6 +2878,7 @@ function loop(now) {
   } else document.body.classList.remove('aiming');
 
   updateSky();
+  if (online()) { updateFriends(dt); netMobs.update(dt); }
   particles.update(dt);
   processChunks(playing ? 5 : 9);
   cullChunks();
@@ -2699,13 +2930,15 @@ window.BLOCKWILD = {
   setTime: v => { time = v; },
   openScreen, renderScreen, interact, updateFurnaces, updateCrops, updateFluids, plantAt, queueFluid,
   arrows, armor, crops, useItem, startDraw, releaseDraw, advance, runCommand, respawn, die,
+  net, netMobs, friends, joinServer,
   selectSlot: i => { sel = clamp(i, 0, HOTBAR - 1); updateHotbar(); },
   setDrawing: v => { drawing = v; },
   setWeather: v => { weather = v; weatherT = 600; },
   explode,
   get state() {
     return {
-      mode, playing, ready, sel, time, dayLight, weather, rainLevel, pending: pending.size,
+      mode, playing, ready, sel, time, seed, dayLight, weather, rainLevel, pending: pending.size,
+      online: online(), netId: net.id, friends: friends.size,
       hotbar: bag.slots.slice(0, HOTBAR).map(s2 => (s2 ? s2.id : 0)),
       inv: bag.slots.filter(Boolean).reduce((a, s2) => ((a[s2.id] = (a[s2.id] || 0) + s2.n), a), {}),
       drops: drops.list.length, screen, cursor,

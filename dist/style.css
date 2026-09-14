@@ -41,6 +41,8 @@ body.underwater #shade{background:linear-gradient(#1b5a6e8c,#0d3c4fa6)}
 .brand .blk{display:inline-block;width:.62em;height:.62em;margin:0 .06em;background:var(--accent);box-shadow:inset -.16em -.1em #00000038,inset .12em .12em #ffffff4d;border-radius:2px;transform:rotate(-6deg) translateY(-.02em)}
 .brand small{display:block;font-size:11px;font-weight:400;letter-spacing:4px;opacity:.65;margin-top:2px}
 .topright{display:flex;align-items:center;gap:12px;font-size:12px;letter-spacing:1.5px}
+#onlineTag{padding:7px 11px;border:1px solid var(--accent-2);border-radius:8px;background:#12302c99;color:var(--accent-2);
+  backdrop-filter:blur(8px);white-space:nowrap;font-weight:700}
 #clock{padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:#0f1d1f8c;backdrop-filter:blur(8px);white-space:nowrap}
 #minimap{width:118px;height:118px;border-radius:12px;border:1px solid var(--line);background:#0b1618a6;backdrop-filter:blur(6px);image-rendering:pixelated}
 #menuButton{font-weight:900;min-width:44px}
@@ -156,6 +158,20 @@ h1{font-size:clamp(40px,5.4vw,74px);line-height:1.12;letter-spacing:-2.5px;margi
 .menulinks button{background:none;border:none;padding:3px 0;font-size:12px;color:#d3e1d6;backdrop-filter:none}
 .menulinks button:hover{color:var(--accent);background:none}
 #saveInfo{font-size:11px;color:#a8bbaf;margin-top:20px}
+
+/* ---- マルチプレイ ---- */
+#netPanel{margin-top:18px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#0d1c1e8c}
+#netPanel.on{border-color:var(--accent-2);background:#12302c8c}
+.nethead{display:flex;align-items:baseline;gap:12px;margin-bottom:10px}
+.nethead strong{font-size:14px;font-weight:600}
+.netrow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.netrow label{flex:1 1 160px;font-size:11px;color:var(--dim);display:grid;gap:4px}
+.netrow input{background:#0b1618;border:1px solid var(--line);border-radius:7px;padding:8px 10px;color:var(--ink);font:13px/1.4 inherit;outline:none;width:100%}
+.netrow input:focus{border-color:var(--accent)}
+#netJoin{width:100%;padding:11px;font-size:13px;font-weight:700;background:#1d3a36;border-color:#ffffff33}
+#netPanel.on #netJoin{background:#3a1d1d;border-color:#ff6b6340}
+#netStatus{font-size:11px;color:var(--dim);margin-top:9px;line-height:1.6}
+#netStatus b{color:var(--accent-2)}
 .original{font-size:10px;color:#7e9289}
 .worldtag{position:absolute;bottom:70px;right:6vw;display:flex;flex-direction:column;gap:12px;text-align:right;max-width:38vw}
 .worldtag span{font-size:11px;letter-spacing:3px;color:var(--dim)}

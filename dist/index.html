@@ -17,6 +17,7 @@
 <header id="hud-top">
   <div class="brand">B<span class="blk"></span>OCKWILD<small>ブロックの世界</small></div>
   <div class="topright">
+    <span id="onlineTag" class="hidden">● 1人</span>
     <span id="clock">☀ 1日目 06:00</span>
     <canvas id="minimap" width="150" height="150" title="周辺の地図"></canvas>
     <button id="menuButton" title="メニュー (Esc)">Ⅱ</button>
@@ -103,12 +104,22 @@
   <div class="menucontent">
     <div class="eyebrow">A LITTLE BLOCK. A WHOLE WORLD.</div>
     <h1>世界は、<br>君の手の中。</h1>
-    <p>島の森を抜け、洞窟に灯をともし、山の頂に自分の印を立てる。<br>ここにあるものは、すべて積み上げ直せる。</p>
+    <p>島の森を抜け、洞窟に灯をともし、山の頂に自分の印を立てる。<br>ひとりでも、友達 20 人とでも。</p>
     <div class="choices">
       <button class="choice active" data-mode="creative"><strong>クリエイティブ</strong><small>無限のブロックで自由に建築・飛行</small></button>
       <button class="choice" data-mode="survival"><strong>サバイバル</strong><small>採掘・クラフト・夜のゾンビ</small></button>
     </div>
     <button id="play" class="primary">世界に入る <span>↗</span></button>
+    <section id="netPanel">
+      <div class="nethead"><span class="eyebrow">MULTIPLAYER</span><strong>友達と同じ世界で</strong></div>
+      <div class="netrow">
+        <label>なまえ<input id="netName" type="text" maxlength="16" placeholder="ぼうけんしゃ"></label>
+        <label>サーバー<input id="netURL" type="text" placeholder="ws://192.168.0.5:8080/ws"></label>
+      </div>
+      <button id="netJoin">このサーバーに参加</button>
+      <div id="netStatus">同じ Wi-Fi の友達は、ホストのアドレスをそのまま開けば参加できます</div>
+    </section>
+
     <div class="menulinks">
       <button id="save">保存</button>
       <button id="load">再開</button>

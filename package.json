@@ -1,0 +1,12 @@
+{
+  "name": "blockwild",
+  "version": "2.0.0",
+  "private": true,
+  "description": "BLOCKWILD — ブラウザで動くブロックの世界。ひとりでも、友達20人まででも。",
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.js",
+    "solo": "node server/server.js"
+  },
+  "engines": { "node": ">=18" }
+}

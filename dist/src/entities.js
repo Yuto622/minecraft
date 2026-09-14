@@ -38,7 +38,7 @@ export const MOB = {
   villager: { name: '村人', hp: 20, body: '#7a5a3e', legs: '#5a4430', speed: .9, villager: true },
 };
 
-function buildMob(type) {
+export function buildMob(type) {
   const g = new THREE.Group(), d = MOB[type];
   const parts = { legs: [], arms: [], head: null };
   if (type === 'chicken') {
@@ -363,6 +363,64 @@ export class Particles {
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+  }
+}
+
+// --- サーバーから送られてくる生き物を、位置だけ受け取って描く ------------------
+export class RemoteMobs {
+  constructor(scene) { this.scene = scene; this.map = new Map(); }
+  clear() { for (const m of this.map.values()) this.scene.remove(m.g); this.map.clear(); }
+  remove(id) {
+    const m = this.map.get(id);
+    if (!m) return null;
+    this.scene.remove(m.g);
+    this.map.delete(id);
+    return m;
+  }
+  add(id, type, x, y, z, angle = 0) {
+    if (this.map.has(id)) return this.map.get(id);
+    const { g, parts } = buildMob(type);
+    g.position.set(x, y, z);
+    this.scene.add(g);
+    const m = { id, type, g, parts, def: MOB[type] || MOB.pig, tx: x, ty: y, tz: z, angle, tangle: angle, walkT: 0, moving: false, hurt: 0, fuse: 0 };
+    this.map.set(id, m);
+    return m;
+  }
+  sync(list) {                               // [id, x, y, z, angle, walking, fuse]
+    for (const [id, x, y, z, a, w, fu] of list) {
+      const m = this.map.get(id);
+      if (!m) continue;
+      m.tx = x; m.ty = y; m.tz = z; m.tangle = a; m.moving = !!w; m.fuse = fu;
+    }
+  }
+  update(dt) {
+    for (const m of this.map.values()) {
+      const p = m.g.position;
+      const k = Math.min(1, dt * 11);
+      p.x += (m.tx - p.x) * k; p.y += (m.ty - p.y) * k; p.z += (m.tz - p.z) * k;
+      let da = ((m.tangle - m.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      m.angle += da * Math.min(1, dt * 9);
+      m.g.rotation.y = -m.angle;
+      m.hurt = Math.max(0, m.hurt - dt);
+      if (m.moving) m.walkT += dt * m.def.speed * 6.2;
+      const swing = m.moving ? Math.sin(m.walkT) * .62 : 0;
+      m.parts.legs.forEach((l, i) => { l.rotation.x = swing * (i % 2 ? 1 : -1); });
+      m.parts.arms.forEach((a, i) => { a.rotation.x = -1.4 + Math.sin(m.walkT) * .18 * (i ? 1 : -1); });
+      if (m.fuse) m.g.scale.setScalar(1 + Math.sin(performance.now() * .02) * .16);
+      else if (m.g.scale.x !== 1) m.g.scale.setScalar(1);
+      m.g.traverse(o => { if (o.isMesh && o.material.emissive) o.material.emissive.setScalar(m.hurt > 0 ? .5 : (m.fuse ? .5 : 0)); });
+    }
+  }
+  pick(origin, dir, maxDist = 4.2) {
+    let best = null, bd = maxDist;
+    for (const m of this.map.values()) {
+      const c = m.g.position.clone().add(new THREE.Vector3(0, .8, 0));
+      const to = c.sub(origin);
+      const t = to.dot(dir);
+      if (t < 0 || t > bd) continue;
+      if (to.addScaledVector(dir, -t).length() < .85) { bd = t; best = m; }
+    }
+    return best;
   }
 }
 
