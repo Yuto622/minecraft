@@ -6,13 +6,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { attach } from './ws.js';
+import { encodeLan, codeFromTunnel, pretty } from '../dist/src/code.js';
 import { W, H, SEA, idx, voxels, metaArr, setRaw, getBlock, surface, isSolid } from '../dist/src/world.js';
 import { generate, setSeed, findSpawn, villages } from '../dist/src/worldgen.js';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(DIR, '..', 'dist');
-const PORT = Number(process.argv[2] || process.env.PORT || 8080);
+const PORT = Number(process.argv.slice(2).find(a => /^\d+$/.test(a)) || process.env.PORT || 8080);
 const MAX_PLAYERS = 20;
 const DAY_LEN = 720;
 
@@ -318,10 +320,59 @@ setInterval(() => {                                  // 応答のない接続を
   }
 }, 15000);
 
+// --- クラスコード -------------------------------------------------------------
+// 同じ Wi-Fi なら LAN のコード、離れていればトンネルのコードで合流できる。
+const lanIPs = Object.values(os.networkInterfaces()).flat()
+  .filter(n => n && n.family === 'IPv4' && !n.internal).map(n => n.address);
+const info = { lan: lanIPs.map(ip => ({ ip, code: encodeLan(ip, PORT) })).filter(v => v.code), net: null, url: null, max: MAX_PLAYERS };
+const useTunnel = !process.argv.includes('--no-tunnel') && process.env.BLOCKWILD_TUNNEL !== '0';
+
+function startTunnel() {
+  const args = ['tunnel', '--url', 'http://localhost:' + PORT, '--no-autoupdate'];
+  const tries = [['cloudflared', args], ['npx', ['--yes', 'cloudflared@latest', ...args]]];
+  let i = 0;
+  const attempt = () => {
+    if (i >= tries.length) {
+      console.log('  （インターネット越しのコードは出せませんでした）');
+      console.log('   同じ Wi-Fi の友達は上のコードで遊べます。');
+      console.log('   離れた友達とつなぐときは、別のウィンドウでこれを実行して、');
+      console.log('   出てきた https:// のアドレスをそのままクラスコード欄に貼ってください：');
+      console.log('     npx --yes cloudflared@latest tunnel --url http://localhost:' + PORT + '\n');
+      return;
+    }
+    const [cmd, a] = tries[i++];
+    let proc;
+    try { proc = spawn(cmd, a, { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' }); }
+    catch { attempt(); return; }
+    let done = false;
+    const scan = buf => {
+      const url = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+      if (!url || done) return;
+      done = true;
+      info.url = url[0];
+      info.net = codeFromTunnel(url[0]);
+      console.log('\n  ★ 遠くの友達もこのコードで入れます： ' + pretty(info.net));
+      console.log('     （そのまま開くなら ' + info.url + ' ）\n');
+    };
+    proc.stdout.on('data', scan);
+    proc.stderr.on('data', scan);
+    proc.on('error', () => { if (!done) attempt(); });
+    proc.on('exit', () => { if (!done) attempt(); else { info.net = null; info.url = null; console.log('  トンネルが切れました。もう一度つなぎ直しています…'); startTunnel(); } });
+    process.on('exit', () => { try { proc.kill(); } catch { /* もう終わっている */ } });
+  };
+  console.log('  インターネット越しのコードを用意しています…（初回は少し待ちます）');
+  attempt();
+}
+
 // --- 静的配信 ------------------------------------------------------------------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8' };
 const server = http.createServer((req, res) => {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (p === '/api/info') {                      // ホストの画面にコードを出すため
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ...info, players: players.size, seed }));
+    return;
+  }
   if (p === '/') p = '/index.html';
   const file = path.join(ROOT, path.normalize(p).replace(/^([/\\])+/, ''));
   if (!file.startsWith(ROOT)) { res.writeHead(403).end('forbidden'); return; }
@@ -334,10 +385,13 @@ const server = http.createServer((req, res) => {
 attach(server, '/ws', onJoin);
 
 server.listen(PORT, () => {
-  const nets = os.networkInterfaces();
-  const ips = Object.values(nets).flat().filter(n => n && n.family === 'IPv4' && !n.internal).map(n => n.address);
   console.log('\n  BLOCKWILD サーバーが動いています（最大 ' + MAX_PLAYERS + ' 人）');
-  console.log('  自分：      http://localhost:' + PORT);
-  for (const ip of ips) console.log('  同じWi-Fiの友達： http://' + ip + ':' + PORT);
-  console.log('\n  止めるときは Ctrl+C\n');
+  console.log('  自分：            http://localhost:' + PORT);
+  for (const v of info.lan) {
+    console.log('  同じWi-Fiの友達：  http://' + v.ip + ':' + PORT + '   クラスコード ' + pretty(v.code));
+  }
+  console.log('');
+  if (useTunnel) startTunnel();
+  else console.log('  （--no-tunnel を外すと、遠くの友達用のコードも出せます）\n');
+  console.log('  止めるときは Ctrl+C\n');
 });

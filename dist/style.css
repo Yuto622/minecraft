@@ -170,6 +170,14 @@ h1{font-size:clamp(40px,5.4vw,74px);line-height:1.12;letter-spacing:-2.5px;margi
 .netrow input:focus{border-color:var(--accent)}
 #netJoin{width:100%;padding:11px;font-size:13px;font-weight:700;background:#1d3a36;border-color:#ffffff33}
 #netPanel.on #netJoin{background:#3a1d1d;border-color:#ff6b6340}
+#hostCode{margin-bottom:12px;padding:10px 12px;border-radius:10px;background:#0a1416b8;border:1px dashed #ffffff2e}
+#hostCode>span{font-size:11px;color:var(--dim);letter-spacing:1px}
+.codebox{display:flex;align-items:center;gap:10px;margin-top:4px}
+.codebox b{font:800 26px/1.2 ui-monospace,monospace;letter-spacing:4px;color:var(--accent);flex:1;
+  word-break:break-all;text-shadow:0 0 18px #d9f78f2e}
+.codebox button{padding:7px 12px;font-size:11px;flex:none}
+#hostCode small{display:block;margin-top:6px;font-size:10.5px;color:var(--dim);line-height:1.6}
+#netCode{text-transform:uppercase;letter-spacing:2px;font-family:ui-monospace,monospace}
 #netStatus{font-size:11px;color:var(--dim);margin-top:9px;line-height:1.6}
 #netStatus b{color:var(--accent-2)}
 .original{font-size:10px;color:#7e9289}

@@ -112,12 +112,19 @@
     <button id="play" class="primary">世界に入る <span>↗</span></button>
     <section id="netPanel">
       <div class="nethead"><span class="eyebrow">MULTIPLAYER</span><strong>友達と同じ世界で</strong></div>
+
+      <div id="hostCode" class="hidden">
+        <span>みんなに教えるクラスコード</span>
+        <div class="codebox"><b id="hostCodeText">…</b><button id="copyCode" title="コピー">コピー</button></div>
+        <small id="hostCodeNote"></small>
+      </div>
+
       <div class="netrow">
         <label>なまえ<input id="netName" type="text" maxlength="16" placeholder="ぼうけんしゃ"></label>
-        <label>サーバー<input id="netURL" type="text" placeholder="ws://192.168.0.5:8080/ws"></label>
+        <label>クラスコード<input id="netCode" type="text" placeholder="4文字〜のコード" autocapitalize="characters" autocomplete="off" spellcheck="false"></label>
       </div>
-      <button id="netJoin">このサーバーに参加</button>
-      <div id="netStatus">同じ Wi-Fi の友達は、ホストのアドレスをそのまま開けば参加できます</div>
+      <button id="netJoin">このコードの世界に入る</button>
+      <div id="netStatus">ホストの画面に出ているコードを、そのまま入れてください</div>
     </section>
 
     <div class="menulinks">

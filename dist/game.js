@@ -11,6 +11,7 @@ import { buildChunk, blockBoxes } from './src/mesher.js';
 import { voxelMaterial, makeSky } from './src/shaders.js';
 import { Mobs, Particles, Arrows, RemoteMobs } from './src/entities.js';
 import { Net } from './src/net.js';
+import { decodeCode, pretty } from './src/code.js';
 import { Inventory, SLOTS, HOTBAR, maxStack, findRecipe, craftOnce, recipes, fuels, smelting } from './src/inventory.js';
 import { Drops } from './src/drops.js';
 import * as Snd from './src/audio.js';
@@ -2452,18 +2453,51 @@ function applyMode(m, keepBar = false) {
 
 // マルチプレイの操作
 $('netName').value = localStorage.getItem('blockwild-name') || '';
-$('netURL').value = localStorage.getItem('blockwild-server') || Net.defaultURL();
+$('netCode').value = localStorage.getItem('blockwild-code') || '';
 $('netJoin').onclick = async () => {
-  if (online()) { net.close(); netMobs.clear(); for (const id of [...friends.keys()]) dropFriend(id); mobs.populate(); updateNetPanel(); $('netStatus').textContent = '切断しました'; return; }
+  if (online()) {
+    net.close(); netMobs.clear();
+    for (const id of [...friends.keys()]) dropFriend(id);
+    mobs.populate();
+    updateNetPanel();
+    $('netStatus').textContent = '切断しました';
+    return;
+  }
   const name = ($('netName').value || '').trim().slice(0, 16) || 'ぼうけんしゃ';
   $('netName').value = name;
-  const url = ($('netURL').value || '').trim() || Net.defaultURL();
+  const raw = ($('netCode').value || '').trim();
+  const url = raw ? decodeCode(raw) : Net.defaultURL();
+  if (!url) { $('netStatus').textContent = 'そのコードは読めません。ホストの画面のコードを確かめて'; return; }
+  localStorage.setItem('blockwild-code', raw);
   $('netJoin').disabled = true;
   await joinServer(url, name);
   $('netJoin').disabled = false;
 };
-$('netURL').addEventListener('keydown', e => { if (e.key === 'Enter') $('netJoin').click(); });
-$('netName').addEventListener('keydown', e => { if (e.key === 'Enter') $('netJoin').click(); });
+for (const id of ['netCode', 'netName']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') $('netJoin').click(); });
+
+// 自分がホストなら、配る用のコードを画面に出す
+async function loadHostCode() {
+  try {
+    const r = await fetch('api/info', { cache: 'no-store' });
+    if (!r.ok) return;
+    const info = await r.json();
+    const code = info.net || info.lan?.[0]?.code;
+    if (!code) return;
+    $('hostCode').classList.remove('hidden');
+    $('hostCodeText').textContent = pretty(code);
+    $('hostCodeNote').textContent = info.net
+      ? 'どこからでもこのコードで入れます。最大 ' + info.max + ' 人。'
+      : '同じ Wi-Fi の友達はこのコードで入れます。' + (info.lan.length > 1 ? '（' + info.lan.map(v => pretty(v.code)).join(' / ') + '）' : '');
+    $('copyCode').onclick = () => {
+      navigator.clipboard?.writeText(pretty(code));
+      $('copyCode').textContent = 'コピーした';
+      setTimeout(() => ($('copyCode').textContent = 'コピー'), 1600);
+    };
+    if (!$('netCode').value) $('netCode').value = pretty(code);
+  } catch { /* ふつうの静的配信ならコードは出さない */ }
+}
+loadHostCode();
+setInterval(() => { if (!$('menu').classList.contains('hidden') && $('hostCode').classList.contains('hidden')) loadHostCode(); }, 20000);
 
 $('play').onclick = () => start();
 $('menuButton').onclick = () => (playing ? pause() : start());
