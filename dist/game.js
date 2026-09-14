@@ -3,7 +3,7 @@
 // 生き物・クラフト・昼夜まで、すべてこのリポジトリ内で完結している。
 import * as THREE from './three.module.js';
 import { ID, IT, TOOL, blocks, items, isItem, name as blockName, color as blockColor } from './src/blocks.js';
-import { buildAtlas, iconURL, blockTextures, tileTexture, cloudTexture, discTexture } from './src/textures.js';
+import { buildAtlas, iconURL, blockTextures, tileTexture, cloudTexture, discTexture, layer as texLayer } from './src/textures.js';
 import * as W3 from './src/world.js';
 import { W, H, SEA, CH, CX, getBlock, setRaw, getMeta, setMeta, relight, relightAll, surface, isSolid, heightMap, biomeMap } from './src/world.js';
 import { generate, setSeed, findSpawn, biomeName, biomeTint } from './src/worldgen.js';
@@ -22,7 +22,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
-const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, music: 45, hints: true, bob: true, buttons: false, dropOnDeath: true };
+const defaults = { dist: 7, fov: 76, sens: 18, vol: 55, music: 45, hints: true, bob: true, buttons: false, dropOnDeath: true, shadows: true, bloom: true };
 const settings = Object.assign({}, defaults, JSON.parse(localStorage.getItem('blockwild-settings') || '{}'));
 const saveSettings = () => localStorage.setItem('blockwild-settings', JSON.stringify(settings));
 
@@ -85,12 +85,134 @@ sun.position.set(-40, 80, 20);
 scene.add(sun);
 
 const atlas = buildAtlas();
+const layerOf = k => texLayer[k] ?? -1;
 const matSolid = voxelMaterial(atlas, { transparent: false });
 const matAlpha = voxelMaterial(atlas, { transparent: true });
+const waterLayer = layerOf('water');
 matAlpha.depthWrite = true;
 
 const mobs = new Mobs(scene);
 const particles = new Particles(scene);
+
+// ---------------------------------------------------------------------------
+// 影：太陽から見た深さを描いておき、地形シェーダで比べる
+// ---------------------------------------------------------------------------
+const SHADOW_RES = 2048, SHADOW_RANGE = 72;
+const shadowRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+const shadowCam = new THREE.OrthographicCamera(-SHADOW_RANGE, SHADOW_RANGE, SHADOW_RANGE, -SHADOW_RANGE, 1, 260);
+const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
+const shadowBias = new THREE.Matrix4().set(.5, 0, 0, .5, 0, .5, 0, .5, 0, 0, .5, .5, 0, 0, 0, 1);
+const sunDirV = new THREE.Vector3(0, 1, 0);
+const lightDirV = new THREE.Vector3(0, 1, 0);   // 太陽か月のうち、いま照らしている方
+let sunStrength = 1;
+const SKY_LAYER = 1;                             // 影を落とさないもの（空・雲・雨など）
+camera.layers.enable(SKY_LAYER);
+for (const o of [sky, clouds, sunDisc, moonDisc]) o.layers.set(SKY_LAYER);
+
+function renderShadows() {
+  const on = settings.shadows && sunStrength > .05;
+  matSolid.uniforms.uShadowOn.value = on ? 1 : 0;
+  matAlpha.uniforms.uShadowOn.value = on ? 1 : 0;
+  if (!on) return;
+  // 影用カメラは光の方向からプレイヤーを見下ろす。ちらつき防止に位置を丸める。
+  const cx = Math.round(player.pos.x), cy = Math.round(player.pos.y), cz = Math.round(player.pos.z);
+  shadowCam.position.set(cx + lightDirV.x * 150, cy + lightDirV.y * 150, cz + lightDirV.z * 150);
+  shadowCam.lookAt(cx, cy, cz);
+  shadowCam.updateMatrixWorld();
+  shadowCam.updateProjectionMatrix();
+  const m = new THREE.Matrix4().multiplyMatrices(shadowCam.projectionMatrix, shadowCam.matrixWorldInverse);
+  m.premultiply(shadowBias);
+  matSolid.uniforms.uShadowMatrix.value.copy(m);
+  matAlpha.uniforms.uShadowMatrix.value.copy(m);
+  matSolid.uniforms.uShadowMap.value = shadowRT.texture;
+  matAlpha.uniforms.uShadowMap.value = shadowRT.texture;
+  const prevOverride = scene.overrideMaterial;
+  scene.overrideMaterial = depthMat;
+  renderer.setRenderTarget(shadowRT);
+  renderer.clear();
+  renderer.render(scene, shadowCam);
+  renderer.setRenderTarget(null);
+  scene.overrideMaterial = prevOverride;
+}
+
+// ---------------------------------------------------------------------------
+// ブルーム：明るいところだけ取り出してぼかし、重ねる
+// ---------------------------------------------------------------------------
+const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const quadGeo = new THREE.PlaneGeometry(2, 2);
+const rtOpts = { type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: false };
+let sceneRT = new THREE.WebGLRenderTarget(2, 2, rtOpts);
+let brightRT = new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: false });
+let blurA = new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: false });
+let blurB = new THREE.WebGLRenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: false });
+const quadVS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+const brightMat = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null }, uThreshold: { value: 1.0 } },
+  vertexShader: quadVS,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uThreshold; varying vec2 vUv;
+    void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb; float l = dot(c, vec3(.2126,.7152,.0722));
+      float k = smoothstep(uThreshold, uThreshold + .8, l); gl_FragColor = vec4(c * k, 1.0); }`,
+  depthTest: false, depthWrite: false,
+});
+const blurMat = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null }, uDir: { value: new THREE.Vector2(1, 0) }, uTexel: { value: new THREE.Vector2(1, 1) } },
+  vertexShader: quadVS,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform vec2 uDir, uTexel; varying vec2 vUv;
+    void main(){ vec2 o = uDir * uTexel; vec3 c = texture2D(tDiffuse, vUv).rgb * .227;
+      c += (texture2D(tDiffuse, vUv + o * 1.385).rgb + texture2D(tDiffuse, vUv - o * 1.385).rgb) * .316;
+      c += (texture2D(tDiffuse, vUv + o * 3.23).rgb + texture2D(tDiffuse, vUv - o * 3.23).rgb) * .07;
+      gl_FragColor = vec4(c, 1.0); }`,
+  depthTest: false, depthWrite: false,
+});
+const compositeMat = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null }, tBloom: { value: null }, uStrength: { value: .55 } },
+  vertexShader: quadVS,
+  fragmentShader: `uniform sampler2D tDiffuse, tBloom; uniform float uStrength; varying vec2 vUv;
+    void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb + texture2D(tBloom, vUv).rgb * uStrength;
+      gl_FragColor = vec4(c, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  depthTest: false, depthWrite: false,
+});
+const quad = new THREE.Mesh(quadGeo, compositeMat);
+const quadScene = new THREE.Scene();
+quadScene.add(quad);
+
+function resizeTargets() {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const w = Math.max(2, size.x | 0), h = Math.max(2, size.y | 0);
+  if (sceneRT.width !== w || sceneRT.height !== h) {
+    sceneRT.setSize(w, h);
+    brightRT.setSize(w >> 1, h >> 1);
+    blurA.setSize(w >> 1, h >> 1);
+    blurB.setSize(w >> 1, h >> 1);
+    blurMat.uniforms.uTexel.value.set(1 / (w >> 1), 1 / (h >> 1));
+  }
+}
+function drawQuad(mat, target) {
+  quad.material = mat;
+  renderer.setRenderTarget(target);
+  renderer.render(quadScene, quadCam);
+}
+
+// 本編を描く。ブルームがオンなら一度テクスチャに描いてから合成する。
+function renderMain() {
+  if (!settings.bloom) { renderer.setRenderTarget(null); renderer.render(scene, camera); return; }
+  resizeTargets();
+  renderer.setRenderTarget(sceneRT);
+  renderer.clear();
+  renderer.render(scene, camera);
+  brightMat.uniforms.tDiffuse.value = sceneRT.texture;
+  drawQuad(brightMat, brightRT);
+  blurMat.uniforms.tDiffuse.value = brightRT.texture; blurMat.uniforms.uDir.value.set(1, 0); drawQuad(blurMat, blurA);
+  blurMat.uniforms.tDiffuse.value = blurA.texture; blurMat.uniforms.uDir.value.set(0, 1); drawQuad(blurMat, blurB);
+  blurMat.uniforms.tDiffuse.value = blurB.texture; blurMat.uniforms.uDir.value.set(1, 0); drawQuad(blurMat, blurA);
+  blurMat.uniforms.tDiffuse.value = blurA.texture; blurMat.uniforms.uDir.value.set(0, 1); drawQuad(blurMat, blurB);
+  compositeMat.uniforms.tDiffuse.value = sceneRT.texture;
+  compositeMat.uniforms.tBloom.value = blurB.texture;
+  drawQuad(compositeMat, null);
+}
 
 // 選択中ブロックの枠
 const outline = new THREE.LineSegments(
@@ -98,6 +220,7 @@ const outline = new THREE.LineSegments(
   new THREE.LineBasicMaterial({ color: '#f6ffd0', transparent: true, opacity: .9, depthTest: true })
 );
 outline.visible = false;
+outline.layers.set(SKY_LAYER);
 scene.add(outline);
 
 // 破壊のひび（10段階）
@@ -108,6 +231,7 @@ const crackMat = new THREE.MeshBasicMaterial({
 const crack = new THREE.Mesh(new THREE.BoxGeometry(1.004, 1.004, 1.004), crackMat);
 crack.visible = false;
 crack.renderOrder = 3;
+crack.layers.set(SKY_LAYER);
 scene.add(crack);
 let crackStage = -1;
 function setCrackStage(n) {
@@ -115,6 +239,15 @@ function setCrackStage(n) {
   crackStage = n;
   crackMat.map = n >= 0 ? tileTexture('crack' + n) : null;
   crackMat.needsUpdate = true;
+}
+
+// 手に持っている物が光るか（松明・ランタン・グロウストーン・溶岩バケツ）
+function heldLightLevel() {
+  const st = bag.get(sel);
+  if (!st) return 0;
+  if (st.id === IT.LAVA_BUCKET) return .9;
+  const e = blocks[st.id]?.emit || 0;
+  return e ? e / 15 * .85 : 0;
 }
 
 // 三人称で見えるプレイヤーの姿
@@ -144,6 +277,7 @@ const avatar = (() => {
 // 本編とは別のシーン・別の画角で最後に重ねて描くので、画面の端でも歪まない。
 const viewScene = new THREE.Scene();
 const viewCamera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, .01, 6);
+viewCamera.layers.enable(SKY_LAYER);
 const viewHemi = new THREE.HemisphereLight('#ffffff', '#5a6472', 2.2);
 const viewSun = new THREE.DirectionalLight('#fff3d6', 2.1);
 viewSun.position.set(-.6, 1, .8);
@@ -358,6 +492,7 @@ function damage(n, reason) {
   }
   player.health = Math.max(0, player.health - n);
   player.hurtCd = .6;
+  shakeT = .35;
   document.body.classList.add('hurt');
   setTimeout(() => document.body.classList.remove('hurt'), 130);
   Snd.hurt();
@@ -1540,6 +1675,7 @@ const rainGeo = new THREE.BufferGeometry();
 const rainMat = new THREE.PointsMaterial({ color: '#cfe6f2', size: .17, transparent: true, opacity: .0, depthWrite: false, sizeAttenuation: true });
 const rainField = new THREE.Points(rainGeo, rainMat);
 rainField.frustumCulled = false;
+rainField.layers.set(SKY_LAYER);
 scene.add(rainField);
 
 function updateWeather(dt) {
@@ -1605,6 +1741,18 @@ function updateSky() {
 
   const ang = (f - .25) * Math.PI * 2;
   const sunDir = new THREE.Vector3(Math.cos(ang) * .8, Math.sin(ang), .35).normalize();
+  sunDirV.copy(sunDir);
+  // 太陽が沈んだら月が照らす（弱く、青白く）
+  const sunUp = sunDir.y > 0;
+  lightDirV.copy(sunUp ? sunDir : sunDir.clone().negate());
+  sunStrength = sunUp ? clamp(sunDir.y * 2.2, 0, 1) : clamp(-sunDir.y * 2.2, 0, 1) * .28;
+  for (const m of [matSolid, matAlpha]) {
+    m.uniforms.uSunDir.value.copy(lightDirV);
+    m.uniforms.uSunStrength.value = sunStrength;
+    m.uniforms.uPlayerPos.value.copy(player.pos);
+    m.uniforms.uCamPos.value.copy(camera.position);
+    m.uniforms.uHeldLight.value = heldLightLevel();
+  }
   sky.material.uniforms.uTop.value.copy(cTop);
   sky.material.uniforms.uMid.value.copy(cMid);
   sky.material.uniforms.uBottom.value.copy(cBot);
@@ -1688,7 +1836,7 @@ function updateMining(dt) {
 // ---------------------------------------------------------------------------
 // プレイヤーの更新
 // ---------------------------------------------------------------------------
-let stepT = 0, bobT = 0;
+let stepT = 0, bobT = 0, shakeT = 0;
 function updatePlayer(dt) {
   stepped = false;
   unstick();
@@ -1773,7 +1921,11 @@ function updatePlayer(dt) {
   // カメラ（F5 で一人称・背後・正面）
   const bob = settings.bob && player.onGround && moving ? Math.sin(bobT) * .035 : 0;
   const eyeY = player.pos.y + (player.sneak ? EYE - .22 : EYE) + bob;
-  camera.rotation.set(player.pitch, player.yaw, settings.bob ? Math.cos(bobT) * .008 : 0);
+  const wantFov = settings.fov + (player.sprint ? 9 : 0) + (drawing ? -12 * Math.min(1, drawing) : 0);
+  if (Math.abs(camera.fov - wantFov) > .05) { camera.fov += (wantFov - camera.fov) * Math.min(1, dt * 9); camera.updateProjectionMatrix(); layoutHeld(); }
+  shakeT = Math.max(0, shakeT - dt);
+  const shake = shakeT > 0 ? Math.sin(shakeT * 60) * shakeT * .12 : 0;
+  camera.rotation.set(player.pitch + shake * .5, player.yaw, (settings.bob ? Math.cos(bobT) * .008 : 0) + shake);
   if (player.view === 0) {
     camera.position.set(player.pos.x, eyeY, player.pos.z);
   } else {
@@ -2127,6 +2279,10 @@ function applyButtons() {
   else if (playing) tryLock();
 }
 $('optButtons').onchange = () => { settings.buttons = $('optButtons').checked; saveSettings(); applyButtons(); };
+for (const [id, key] of [['optShadows', 'shadows'], ['optBloom', 'bloom']]) {
+  $(id).checked = !!settings[key];
+  $(id).onchange = () => { settings[key] = $(id).checked; saveSettings(); };
+}
 $('optHints').checked = settings.hints;
 $('optHints').onchange = () => { settings.hints = $('optHints').checked; saveSettings(); };
 $('optBob').checked = settings.bob;
@@ -2326,7 +2482,7 @@ addEventListener('resize', () => {
   layoutHeld();
 });
 
-let wantShot = false, fluidT = 0;
+let wantShot = false, fluidT = 0, shadowReady = false;
 function saveScreenshot() {
   try {
     renderer.domElement.toBlob(blob => {
@@ -2343,11 +2499,12 @@ function saveScreenshot() {
 
 let last = performance.now(), frames = 0, fps = 60, fpsT = 0, hudT = 0, spawnT = 0, furnaceT = 0;
 // 端末が重いときは自動で解像度を落とし、軽ければ戻す
-let pixelScale = Math.min(devicePixelRatio, 2), slowT = 0, fastT = 0, drawCalls = 0, drawTris = 0;
+let pixelScale = Math.min(devicePixelRatio, 2), slowT = 0, fastT = 0, drawCalls = 0, drawTris = 0, shadowsAutoOff = false;
 function autoQuality() {
   if (!playing) return;
   if (fps < 34) { slowT++; fastT = 0; } else if (fps > 55) { fastT++; slowT = 0; } else { slowT = fastT = 0; }
   const min = .6, max = Math.min(devicePixelRatio, 2);
+  if (slowT >= 4 && settings.shadows && !shadowsAutoOff) { settings.shadows = false; shadowsAutoOff = true; slowT = 0; toast('動作が重いので影を切りました（設定で戻せます）'); return; }
   if (slowT >= 4 && pixelScale > min) { pixelScale = Math.max(min, pixelScale - .25); renderer.setPixelRatio(pixelScale); slowT = 0; }
   else if (fastT >= 10 && pixelScale < max) { pixelScale = Math.min(max, pixelScale + .25); renderer.setPixelRatio(pixelScale); fastT = 0; }
 }
@@ -2424,6 +2581,7 @@ function loop(now) {
   processChunks(playing ? 5 : 9);
   cullChunks();
   matSolid.uniforms.uTime.value = matAlpha.uniforms.uTime.value = now * .001;
+  matAlpha.uniforms.uWaterLayer.value = waterLayer;
 
   hudT += dt;
   if (hudT > .2) {
@@ -2445,7 +2603,8 @@ function loop(now) {
         `掘 ${stats.mined} 置 ${stats.placed} 狩 ${stats.hunted}`;
     }
   }
-  renderer.render(scene, camera);
+  if ((frames & 1) === 0 || !shadowReady) { renderShadows(); shadowReady = true; }
+  renderMain();
   if (wantShot) { wantShot = false; saveScreenshot(); }
   drawCalls = renderer.info.render.calls;
   drawTris = renderer.info.render.triangles;

@@ -51,9 +51,9 @@ function cornerLight(x, y, z, f, p) {
   return [sky / n / 15, blk / n / 15, AO[ao] * f.s];
 }
 
-const newG = () => ({ pos: [], uv: [], layer: [], light: [], anim: [], idx: [] });
+const newG = () => ({ pos: [], uv: [], layer: [], light: [], anim: [], nrm: [], idx: [] });
 
-function pushQuad(g, verts, lay, lights, anim, uvs) {
+function pushQuad(g, verts, lay, lights, anim, uvs, n = [0, 1, 0]) {
   const base = g.pos.length / 3;
   for (let k = 0; k < 4; k++) {
     g.pos.push(verts[k][0], verts[k][1], verts[k][2]);
@@ -61,6 +61,7 @@ function pushQuad(g, verts, lay, lights, anim, uvs) {
     g.layer.push(lay);
     g.light.push(lights[k][0], lights[k][1], lights[k][2]);
     g.anim.push(anim);
+    g.nrm.push(n[0], n[1], n[2]);
   }
   const a = lights[0][2] + lights[3][2], b = lights[1][2] + lights[2][2];
   if (a > b) g.idx.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
@@ -99,7 +100,7 @@ function emitFace(g, x, y, z, b, fi, lay, anim, tn) {
   // 裏返る面の頂点順を入れ替える
   const flip = (f.n[a] > 0) !== (t0 < t1);
   if (flip) { [verts[1], verts[2]] = [verts[2], verts[1]]; [uvs[1], uvs[2]] = [uvs[2], uvs[1]]; [lights[1], lights[2]] = [lights[2], lights[1]]; }
-  pushQuad(g, verts, lay, lights, anim, uvs);
+  pushQuad(g, verts, lay, lights, anim, uvs, f.n);
 }
 
 // 箱を Y 軸まわりに meta*90 度回す
@@ -178,7 +179,7 @@ export function buildChunk(cx, cy, cz) {
         pushQuad(solid, [
           [x + mg, y, z + (s > 0 ? mg : 1 - mg)], [x + 1 - mg, y, z + (s > 0 ? 1 - mg : mg)],
           [x + mg, y + hgt, z + (s > 0 ? mg : 1 - mg)], [x + 1 - mg, y + hgt, z + (s > 0 ? 1 - mg : mg)],
-        ], lay, L, 0, uv);
+        ], lay, L, 0, uv, [s * .7, .7, s * .7]);
       }
       continue;
     }
@@ -226,6 +227,7 @@ function finish(g) {
   geo.setAttribute('aLayer', new THREE.Float32BufferAttribute(g.layer, 1));
   geo.setAttribute('aLight', new THREE.Float32BufferAttribute(g.light, 3));
   geo.setAttribute('aAnim', new THREE.Float32BufferAttribute(g.anim, 1));
+  geo.setAttribute('aNormal', new THREE.Float32BufferAttribute(g.nrm, 3));
   geo.setIndex(g.idx);
   geo.computeBoundingSphere();
   return geo;
