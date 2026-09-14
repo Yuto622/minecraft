@@ -6,7 +6,7 @@ import { ID, IT, TOOL, blocks, items, isItem, name as blockName, color as blockC
 import { buildAtlas, iconURL, blockTextures, tileTexture, cloudTexture, discTexture, layer as texLayer } from './src/textures.js';
 import * as W3 from './src/world.js';
 import { W, H, SEA, CH, CX, getBlock, setRaw, getMeta, setMeta, relight, relightAll, surface, isSolid, heightMap, biomeMap } from './src/world.js';
-import { generate, setSeed, findSpawn, biomeName, biomeTint } from './src/worldgen.js';
+import { generate, setSeed, findSpawn, biomeName, biomeTint, villages } from './src/worldgen.js';
 import { buildChunk, blockBoxes } from './src/mesher.js';
 import { voxelMaterial, makeSky } from './src/shaders.js';
 import { Mobs, Particles, Arrows } from './src/entities.js';
@@ -804,6 +804,22 @@ function useItem() {
       bag.set(sel, { id: IT.BUCKET, n: 1 });
       Snd.splash();
       updateHotbar();
+      return true;
+    }
+  }
+  // 村人と取引（小麦3→パン、革2→鉄、石炭6→たいまつ8）
+  {
+    camera.getWorldDirection(dir);
+    const m = mobs.pick(camera.getWorldPosition(new THREE.Vector3()), dir, 4);
+    if (m?.def.villager) {
+      const trades = [[IT.WHEAT_ITEM, 3, IT.BREAD, 1], [IT.LEATHER, 2, IT.IRON, 1], [IT.COAL, 6, ID.TORCH, 8], [IT.RAW_IRON, 2, IT.IRON, 1]];
+      const t = trades.find(x => x[0] === st.id);
+      if (!t) { toast('村人：' + ['小麦3つでパンを', '革2枚で鉄を', '石炭6つでたいまつを', '鉄の原石2つで鉄を'][Math.floor(Math.random() * 4)] + '交換しよう'); Snd.mob('villager'); return true; }
+      if (bag.count(t[0]) < t[1]) { toast('村人：' + blockName(t[0]) + 'が ' + t[1] + ' 個ないと交換できない'); return true; }
+      bag.remove(t[0], t[1]);
+      give(t[2], t[3]);
+      Snd.craft();
+      toast(blockName(t[0]) + '×' + t[1] + ' → ' + blockName(t[2]) + '×' + t[3] + ' と交換した');
       return true;
     }
   }
@@ -1836,7 +1852,7 @@ function updateMining(dt) {
 // ---------------------------------------------------------------------------
 // プレイヤーの更新
 // ---------------------------------------------------------------------------
-let stepT = 0, bobT = 0, shakeT = 0;
+let stepT = 0, bobT = 0, shakeT = 0, wasInWater = false;
 function updatePlayer(dt) {
   stepped = false;
   unstick();
@@ -1883,9 +1899,20 @@ function updatePlayer(dt) {
   // 足音と歩行の揺れ
   if (moving && player.onGround) {
     stepT += dt * (player.sprint ? 9 : 6.4);
-    if (stepT > 1) { stepT = 0; Snd.step(soundMat(getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y - .2), Math.floor(player.pos.z)))); }
+    if (stepT > 1) {
+      stepT = 0;
+      const under = getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y - .2), Math.floor(player.pos.z));
+      Snd.step(soundMat(under));
+      if (player.sprint && under) particles.burst(player.pos.x - .5, player.pos.y - .3, player.pos.z - .5, blockColor(under), 3, .25);
+    }
     bobT += dt * (player.sprint ? 11 : 8);
   }
+  // 水に飛び込んだしぶき
+  if (player.inWater && !wasInWater && player.vel.y < -3) {
+    particles.burst(player.pos.x - .5, player.pos.y + .2, player.pos.z - .5, '#a9d8f0', 18, 1.2);
+    Snd.splash();
+  }
+  wasInWater = player.inWater;
 
   // 触れると痛いブロック（サボテン・溶岩・火）
   const bx = Math.floor(player.pos.x), bz = Math.floor(player.pos.z);
@@ -2370,6 +2397,34 @@ $('import').onclick = async () => {
   try { await reloadFromState(await Save.importFile()); toast('ファイルから読み込んだ'); }
   catch { toast('このファイルは読み込めない'); }
 };
+// 村のチェストに宝を入れる
+function stockVillageChests() {
+  const loot = [[IT.BREAD, 1, 3], [IT.WHEAT_ITEM, 2, 6], [IT.SEEDS, 2, 5], [IT.IRON, 1, 3], [IT.COAL, 3, 8], [ID.TORCH, 4, 8], [IT.LEATHER, 1, 3], [IT.ARROW, 4, 10], [IT.STONE_HOE, 1, 1], [IT.HELM_L, 1, 1]];
+  for (const v of villages) {
+    for (let x = v.x - 16; x <= v.x + 16; x++) for (let z = v.z - 16; z <= v.z + 16; z++) for (let y = SEA; y < H; y++) {
+      if (getBlock(x, y, z) !== ID.CHEST) continue;
+      const c = chestAt(x, y, z);
+      for (let k = 0; k < 3 + Math.floor(Math.random() * 3); k++) {
+        const [id, a, b2] = loot[Math.floor(Math.random() * loot.length)];
+        const slot = Math.floor(Math.random() * 27);
+        if (!c[slot]) c[slot] = { id, n: a + Math.floor(Math.random() * (b2 - a + 1)), ...(items[id]?.dur ? { dur: items[id].dur } : {}) };
+      }
+    }
+  }
+}
+
+function spawnVillagers() {
+  for (const v of villages) {
+    for (let i = 0; i < 6; i++) {
+      const x = v.x + (Math.random() - .5) * 20, z = v.z + (Math.random() - .5) * 20;
+      const y = surface(Math.floor(x), Math.floor(z));
+      if (y <= SEA || getBlock(Math.floor(x), y + 1, Math.floor(z))) continue;
+      const m = mobs.spawn('villager', x, y + 1, z);
+      m.home = { x: v.x, z: v.z };
+    }
+  }
+}
+
 async function reloadFromState(s) {
   showLoading('世界を組み立てています');
   await gap();
@@ -2377,6 +2432,7 @@ async function reloadFromState(s) {
   relightAll();
   rebuildAll();
   mobs.populate();
+  spawnVillagers();
   await buildNear(4, .55);
   start();
 }
@@ -2392,6 +2448,11 @@ const TIPS = [
   'ランタンや松明は、置いた場所から本当に光が広がる。',
   '白い花や赤い花で羊毛を染められる。',
   '島の外周はすべて海。端まで歩けば水平線が見える。',
+  '村には井戸と畑と家がある。チェストの中身は持って帰ろう。',
+  '村人に小麦3つを見せると、パンと交換してくれる。',
+  '松明を手に持つと、置かなくても周りが明るい。',
+  'Shift で縁から落ちない。Ctrl で走る。F5 で自分の姿が見える。',
+  'T でコマンド。time night と打つと夜になる。',
 ];
 function showLoading(msg) {
   $('loading').classList.remove('hidden');
@@ -2438,12 +2499,22 @@ async function createWorld(newSeed) {
   await gap();
   relightAll();
   const s = findSpawn();
+  if (villages.length) {                              // 村が見える距離から始める
+    const v = villages[0];
+    const x = clamp(v.x + 26, 4, W - 4), z = clamp(v.z + 26, 4, W - 4);
+    const y = surface(x, z);
+    if (y > SEA && !getBlock(x, y + 1, z) && !getBlock(x, y + 2, z)) { s[0] = x + .5; s[1] = y + 1.02; s[2] = z + .5; }
+    player.yaw = Math.atan2(x - v.x, v.z - z) + Math.PI;
+  }
   player.pos.set(s[0], s[1], s[2]);
   player.vel.set(0, 0, 0);
-  player.yaw = Math.random() * 6.28; player.pitch = -.1;
+  if (!villages.length) player.yaw = Math.random() * 6.28;
+  player.pitch = -.1;
   player.health = 20; player.food = 20; player.air = 10;
   time = 300;
   mobs.populate();
+  spawnVillagers();
+  stockVillageChests();
   rebuildAll();
   await buildNear(3.2, .92);
   mapDirty = true;

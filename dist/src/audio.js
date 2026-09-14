@@ -74,7 +74,7 @@ export function pickup() { tone(880, .09, .07); setTimeout(() => tone(1320, .1, 
 export function splash() { noise(.22, .4, 900, 'lowpass', .7); }
 export function hit() { noise(.2, .1, 260, 'lowpass', 1.2); tone(180, .1, .1, 'square', .5); }
 export function mob(type) {
-  const base = { pig: 380, cow: 180, sheep: 520, chicken: 900, zombie: 120 }[type] || 400;
+  const base = { pig: 380, cow: 180, sheep: 520, chicken: 900, zombie: 120, villager: 240, creeper: 500, skeleton: 700 }[type] || 400;
   tone(base, .3, .08, type === 'zombie' ? 'sawtooth' : 'triangle', type === 'zombie' ? .6 : 1.35);
 }
 export function fuse() { tone(1200, .5, .1, 'square', .35); noise(.09, .5, 2400, 'bandpass', 3); }

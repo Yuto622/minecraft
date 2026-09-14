@@ -3,7 +3,7 @@
 // ブロックを置く／壊すたびに周囲だけを再計算するので、松明１本でも即座に陰影が変わる。
 import { blocks, ID } from './blocks.js';
 
-export const W = 192;        // 一辺のブロック数
+export const W = 256;        // 一辺のブロック数
 export const H = 64;         // 高さ
 export const SEA = 20;       // 海面
 export const CH = 16;        // チャンクの一辺

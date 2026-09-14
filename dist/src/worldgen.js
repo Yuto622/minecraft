@@ -241,7 +241,140 @@ export function* generate() {
       setRaw(x, surface(x, z) + 1, z, ID.GLOWSTONE);
     }
   }
+  yield { p: .86, msg: '村を建てています' };
+  placeVillages();
   yield { p: .88, msg: '光を通しています' };
+}
+
+// --- 村 ---------------------------------------------------------------------
+export const villages = [];
+function flatness(cx, cz, r) {
+  let min = 1e9, max = -1e9, water = 0;
+  for (let x = cx - r; x <= cx + r; x += 2) for (let z = cz - r; z <= cz + r; z += 2) {
+    const h = heightMap[Math.max(0, Math.min(W - 1, x)) + Math.max(0, Math.min(W - 1, z)) * W];
+    if (h <= SEA) water++;
+    min = Math.min(min, h); max = Math.max(max, h);
+  }
+  return water ? 99 : max - min;
+}
+const setB = (x, y, z, id, m = 0) => setRaw(x, y, z, id, m);
+const clearAbove = (x, y, z, n) => { for (let i = 0; i < n; i++) setB(x, y + i, z, ID.AIR); };
+
+function buildHouse(x0, z0, w, d, dir, rng) {
+  // 土台の高さ：足元の平均
+  let sum = 0, n = 0;
+  for (let x = 0; x < w; x++) for (let z = 0; z < d; z++) { sum += surface(x0 + x, z0 + z); n++; }
+  const y = Math.round(sum / n);
+  const wallH = 4;
+  for (let x = 0; x < w; x++) for (let z = 0; z < d; z++) {
+    // 土台を埋めて上を空ける
+    for (let yy = surface(x0 + x, z0 + z); yy < y; yy++) setB(x0 + x, yy, z0 + z, ID.COBBLE);
+    for (let yy = y + 1; yy <= y + wallH + 4; yy++) setB(x0 + x, yy, z0 + z, ID.AIR);
+    setB(x0 + x, y, z0 + z, ID.PLANKS);
+    const edge = x === 0 || z === 0 || x === w - 1 || z === d - 1;
+    const corner = (x === 0 || x === w - 1) && (z === 0 || z === d - 1);
+    for (let h = 1; h <= wallH; h++) {
+      if (!edge) continue;
+      let id = corner ? ID.LOG : ID.PLANKS;
+      if (h === 1 && !corner) id = ID.COBBLE;
+      if (h === 2 || h === 3) {
+        const mid = (x === 0 || x === w - 1) ? (z === Math.floor(d / 2)) : (x === Math.floor(w / 2));
+        if (mid && !corner && h === 2) id = ID.GLASS_PANE;
+      }
+      setB(x0 + x, y + h, z0 + z, id);
+    }
+  }
+  // 屋根：ハーフブロックを段々に
+  for (let step = 0; step <= Math.ceil(Math.min(w, d) / 2); step++) {
+    for (let x = -1 + step; x <= w - step; x++) for (let z = -1 + step; z <= d - step; z++) {
+      const rim = x === -1 + step || x === w - step || z === -1 + step || z === d - step;
+      if (rim) setB(x0 + x, y + wallH + 1 + step, z0 + z, ID.WOOD_SLAB);
+      else if (step === 0) setB(x0 + x, y + wallH + 1, z0 + z, ID.PLANKS);
+    }
+  }
+  // ドア（南側の中央）
+  const dx = x0 + Math.floor(w / 2), dz = z0 + d - 1;
+  setB(dx, y + 1, dz, ID.DOOR, 0);
+  setB(dx, y + 2, dz, ID.DOOR, 4);
+  setB(dx, y, dz + 1, ID.COBBLE);
+  // 家具
+  setB(x0 + 1, y + 1, z0 + 1, ID.BED, 1);
+  setB(x0 + 2, y + 1, z0 + 1, ID.BED, 5);
+  setB(x0 + w - 2, y + 1, z0 + 1, ID.BENCH, 0);
+  setB(x0 + w - 2, y + 1, z0 + 2, ID.CHEST, 2);
+  setB(x0 + 1, y + 3, z0 + d - 2, ID.TORCH);
+  setB(x0 + w - 2, y + 3, z0 + d - 2, ID.TORCH);
+  setB(x0 + Math.floor(w / 2), y + wallH + 2, z0 + Math.floor(d / 2), ID.LANTERN);
+  return y;
+}
+
+function buildWell(cx, cz) {
+  const y = surface(cx, cz);
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
+    clearAbove(cx + x, y + 1, cz + z, 6);
+    for (let yy = y - 3; yy <= y; yy++) setB(cx + x, yy, cz + z, (x === 0 && z === 0) ? (yy > y - 3 ? ID.WATER : ID.COBBLE) : ID.COBBLE);
+    setB(cx + x, y + 1, cz + z, (x === 0 && z === 0) ? ID.AIR : ID.COBBLE);
+  }
+  setB(cx, y, cz, ID.WATER);
+  for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { setB(cx + x, y + 2, cz + z, ID.FENCE); setB(cx + x, y + 3, cz + z, ID.FENCE); }
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) setB(cx + x, y + 4, cz + z, ID.WOOD_SLAB);
+}
+
+function buildFarm(x0, z0, w, d) {
+  const y = surface(x0 + 1, z0 + 1);
+  for (let x = -1; x <= w; x++) for (let z = -1; z <= d; z++) {
+    for (let yy = surface(x0 + x, z0 + z); yy < y; yy++) setB(x0 + x, yy, z0 + z, ID.DIRT);
+    clearAbove(x0 + x, y + 1, z0 + z, 4);
+    const rim = x === -1 || z === -1 || x === w || z === d;
+    if (rim) { setB(x0 + x, y, z0 + z, ID.LOG); continue; }
+    if (x === Math.floor(w / 2)) { setB(x0 + x, y, z0 + z, ID.WATER); continue; }
+    setB(x0 + x, y, z0 + z, ID.FARMLAND);
+    setB(x0 + x, y + 1, z0 + z, ID.WHEAT, Math.floor(hash2(x0 + x, z0 + z, 131) * 4));
+  }
+}
+
+function buildVillage(cx, cz) {
+  const rng = k => hash2(cx + k, cz, 141);
+  const houses = [[-11, -11, 7, 6], [4, -12, 6, 6], [-12, 4, 6, 7], [5, 5, 7, 7]];
+  buildWell(cx, cz);
+  const ys = [];
+  houses.forEach(([dx, dz, w, d], i) => { ys.push(buildHouse(cx + dx, cz + dz, w, d, i, rng)); });
+  buildFarm(cx - 4, cz + 8, 8, 4);
+  // 小道：井戸から各家へ砂利
+  for (const [dx, dz, w, d] of houses) {
+    const tx = cx + dx + Math.floor(w / 2), tz = cz + dz + d + 1;
+    let x = cx, z = cz + 2;
+    for (let i = 0; i < 40 && (x !== tx || z !== tz); i++) {
+      if (x !== tx) x += Math.sign(tx - x); else z += Math.sign(tz - z);
+      const y = surface(x, z);
+      const t = getBlock(x, y, z);
+      if (t === ID.GRASS || t === ID.DIRT || t === ID.SAND) setB(x, y, z, ID.GRAVEL);
+    }
+  }
+  // 明かりの柱
+  for (const [dx, dz] of [[-3, -3], [3, -3], [-3, 3], [3, 3]]) {
+    const y = surface(cx + dx, cz + dz);
+    setB(cx + dx, y + 1, cz + dz, ID.FENCE); setB(cx + dx, y + 2, cz + dz, ID.FENCE);
+    setB(cx + dx, y + 3, cz + dz, ID.LANTERN);
+  }
+  villages.push({ x: cx, z: cz, houses: houses.length });
+}
+
+export function placeVillages() {
+  villages.length = 0;
+  const cands = [];
+  for (let cx = 28; cx < W - 28; cx += 6) for (let cz = 28; cz < W - 28; cz += 6) {
+    const b = biomeMap[cx + cz * W];
+    if (b !== BIOME.PLAINS && b !== BIOME.FOREST) continue;
+    const f = flatness(cx, cz, 14);
+    if (f <= 4) cands.push([f + hash2(cx, cz, 151) * 2, cx, cz]);
+  }
+  cands.sort((a, b) => a[0] - b[0]);
+  for (const [, cx, cz] of cands) {
+    if (villages.some(v => Math.hypot(v.x - cx, v.z - cz) < 70)) continue;
+    buildVillage(cx, cz);
+    if (villages.length >= 3) break;
+  }
 }
 
 // 安全なスポーン地点（陸地で、木の中でない場所）

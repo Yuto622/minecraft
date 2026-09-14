@@ -35,6 +35,7 @@ export const MOB = {
   zombie:  { name: 'ゾンビ', hp: 18, body: '#4f7a52', legs: '#3c4f7a', speed: 1.5, hostile: true },
   creeper: { name: 'クリーパー', hp: 14, body: '#5fa356', legs: '#4a8a46', speed: 1.7, hostile: true, fuse: true },
   skeleton: { name: 'スケルトン', hp: 16, body: '#d9d7cf', legs: '#c6c4bc', speed: 1.25, hostile: true, ranged: true },
+  villager: { name: '村人', hp: 20, body: '#7a5a3e', legs: '#5a4430', speed: .9, villager: true },
 };
 
 function buildMob(type) {
@@ -48,6 +49,17 @@ function buildMob(type) {
     box(.06, .2, .28, '#ffffff', -.2, .6, -.18, g);
     for (const z of [-.11, .11]) parts.legs.push(limb(.08, .32, .08, d.legs, 0, .4, z, g));
     box(.22, .16, .04, '#c8443c', .28, .95, 0, g);
+  } else if (type === 'villager') {
+    box(.54, .9, .34, d.body, 0, 1.2, 0, g);                       // ローブ
+    box(.6, .3, .38, '#5f4630', 0, .75, 0, g);
+    parts.head = box(.5, .56, .5, '#d9a877', 0, 1.9, 0, g);
+    box(.12, .2, .14, '#c98f6a', 0, 1.82, .3, parts.head);         // 大きな鼻
+    box(.1, .1, .04, '#3a6a3a', .13, 1.96, .25, parts.head);
+    box(.1, .1, .04, '#3a6a3a', -.13, 1.96, .25, parts.head);
+    box(.52, .12, .52, '#5a4430', 0, 2.2, 0, parts.head);
+    const armsG = new THREE.Group(); armsG.position.set(0, 1.35, .12); g.add(armsG);
+    box(.56, .2, .2, d.body, 0, 0, 0, armsG);                      // 組んだ腕
+    for (const x of [-.13, .13]) parts.legs.push(limb(.22, .74, .24, d.legs, x, .78, 0, g));
   } else if (type === 'skeleton') {
     box(.42, .8, .26, d.body, 0, 1.2, 0, g);
     parts.head = box(.5, .5, .5, '#e4e2da', 0, 1.85, 0, g);
@@ -170,6 +182,16 @@ export class Mobs {
         want = dist > 1.1;
         speed *= 1.15;
         if (dist < 1.8 && Math.abs(player.y - pos.y) < 2.4 && m.atk <= 0) { hitPlayer(4); m.atk = 1.1; }
+      } else if (m.def.villager && m.home) {
+        m.idle -= dt;
+        if (m.idle <= 0) {
+          m.idle = 2 + Math.random() * 5;
+          m.walking = Math.random() > .4;
+          const far = Math.hypot(m.home.x - pos.x, m.home.z - pos.z) > 14;
+          m.target = far ? Math.atan2(m.home.z - pos.z, m.home.x - pos.x) : m.angle + (Math.random() - .5) * 2.4;
+        }
+        want = m.walking;
+        if (dist < 3 && !night) { m.target = Math.atan2(dz, dx); want = false; }   // 近づくと向いてくる
       } else if (m.love > 0) {
         let mate = null;
         for (const o of this.list) if (o !== m && o.type === m.type && o.love > 0 && !o.baby) { mate = o; break; }
